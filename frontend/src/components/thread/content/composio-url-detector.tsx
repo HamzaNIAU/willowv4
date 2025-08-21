@@ -4,6 +4,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Markdown } from '@/components/ui/markdown';
+import { toast } from 'sonner';
 
 interface ComposioUrlDetectorProps {
   content: string;
@@ -163,6 +164,7 @@ function detectComposioUrls(content: string): ComposioUrl[] {
   const authUrlPatterns = [
     /https:\/\/accounts\.google\.com\/oauth\/authorize\?[^\s)]+/g,
     /https:\/\/accounts\.google\.com\/o\/oauth2\/[^\s)]+/g,
+    /https:\/\/accounts\.google\.com\/o\/oauth2\/v2\/auth\?[^\s)]+/g,
     /https:\/\/github\.com\/login\/oauth\/authorize\?[^\s)]+/g,
     /https:\/\/api\.notion\.com\/v1\/oauth\/authorize\?[^\s)]+/g,
     /https:\/\/slack\.com\/oauth\/[^\s)]+/g,
@@ -227,7 +229,92 @@ const ComposioConnectButton: React.FC<ComposioConnectButtonProps> = ({
   const logoUrl = toolkitSlug ? TOOLKIT_LOGOS[toolkitSlug.toLowerCase()] : null;
   
   const handleConnect = () => {
-    window.open(url, '_blank', 'noopener,noreferrer');
+    // Check if this is a YouTube OAuth URL
+    // YouTube OAuth uses Google's OAuth endpoint with YouTube scopes
+    const isYouTubeAuth = (
+      url.includes('accounts.google.com') && 
+      (url.includes('youtube') || // Check for youtube in any part of the URL
+       displayName === 'YouTube' || // Check if it was detected as YouTube
+       toolkitSlug === 'youtube') // Check the toolkit slug
+    );
+    
+    if (isYouTubeAuth) {
+      // Save current location for redirect after auth
+      if (typeof window !== 'undefined' && window.sessionStorage) {
+        window.sessionStorage.setItem('youtube_auth_return_url', window.location.href);
+      }
+      
+      // Open YouTube auth in a popup like Social Media page does
+      const popup = window.open(
+        url,
+        'youtube-auth',
+        'width=600,height=700,resizable=yes,scrollbars=yes'
+      );
+      
+      // Listen for auth completion
+      const handleMessage = (event: MessageEvent) => {
+        if (event.data?.type === 'youtube-auth-success') {
+          popup?.close();
+          window.removeEventListener('message', handleMessage);
+          window.removeEventListener('storage', handleStorage);
+          
+          // Show success toast with channel info
+          const channel = event.data.channel;
+          if (channel && channel.name) {
+            toast.success(
+              <div className="flex items-center gap-3">
+                {channel.profile_picture && (
+                  <img 
+                    src={channel.profile_picture} 
+                    alt="" 
+                    className="w-8 h-8 rounded-full"
+                  />
+                )}
+                <div>
+                  <div className="font-semibold">Connected Successfully!</div>
+                  <div className="text-sm opacity-90">
+                    {channel.name} {channel.username && `• @${channel.username}`}
+                  </div>
+                </div>
+              </div>
+            );
+          } else {
+            toast.success('YouTube account connected successfully!');
+          }
+          
+          // Trigger a refresh event instead of reloading the page
+          // This allows the chat to update without losing context
+          window.dispatchEvent(new CustomEvent('youtube-connected'));
+        } else if (event.data?.type === 'youtube-auth-error') {
+          popup?.close();
+          window.removeEventListener('message', handleMessage);
+          window.removeEventListener('storage', handleStorage);
+          toast.error(`Failed to connect: ${event.data.error || 'Unknown error'}`);
+        }
+      };
+      
+      // Fallback: Listen for storage events in case postMessage fails
+      const handleStorage = (event: StorageEvent) => {
+        if (event.key === 'youtube-auth-result' && event.newValue) {
+          try {
+            const result = JSON.parse(event.newValue);
+            if (result.type === 'youtube-auth-success') {
+              handleMessage({ data: result } as MessageEvent);
+              // Clean up the storage
+              localStorage.removeItem('youtube-auth-result');
+            }
+          } catch (e) {
+            console.error('Failed to parse storage event:', e);
+          }
+        }
+      };
+      
+      window.addEventListener('message', handleMessage);
+      window.addEventListener('storage', handleStorage);
+    } else {
+      // For non-YouTube OAuth, open in new tab
+      window.open(url, '_blank', 'noopener,noreferrer');
+    }
   };
 
   return (

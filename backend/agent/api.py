@@ -3635,3 +3635,124 @@ async def upload_agent_profile_image(
     except Exception as e:
         logger.error(f"Failed to upload agent profile image for user {user_id}: {e}")
         raise HTTPException(status_code=500, detail="Failed to upload profile image")
+
+
+# MCP Toggle Management Endpoints
+from services.mcp_toggles import MCPToggleService
+
+class MCPToggleRequest(BaseModel):
+    mcp_id: str
+    enabled: bool
+
+class MCPTogglesResponse(BaseModel):
+    toggles: Dict[str, bool]
+
+@router.get("/agents/{agent_id}/mcp-toggles", response_model=MCPTogglesResponse)
+async def get_agent_mcp_toggles(
+    agent_id: str,
+    user_id: str = Depends(get_current_user_id_from_jwt)
+):
+    """Get all MCP toggle states for an agent"""
+    try:
+        toggle_service = MCPToggleService(db)
+        toggles = await toggle_service.get_toggles(agent_id, user_id)
+        
+        return MCPTogglesResponse(toggles=toggles)
+        
+    except Exception as e:
+        logger.error(f"Failed to get MCP toggles: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.put("/agents/{agent_id}/mcp-toggle")
+async def update_agent_mcp_toggle(
+    agent_id: str,
+    request: MCPToggleRequest,
+    user_id: str = Depends(get_current_user_id_from_jwt)
+):
+    """Update toggle state for a specific MCP"""
+    try:
+        toggle_service = MCPToggleService(db)
+        success = await toggle_service.set_toggle(
+            agent_id=agent_id,
+            user_id=user_id,
+            mcp_id=request.mcp_id,
+            enabled=request.enabled
+        )
+        
+        if success:
+            return {"success": True, "mcp_id": request.mcp_id, "enabled": request.enabled}
+        else:
+            raise HTTPException(status_code=500, detail="Failed to update toggle")
+            
+    except Exception as e:
+        logger.error(f"Failed to update MCP toggle: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/agents/{agent_id}/enabled-mcps")
+async def get_enabled_mcps(
+    agent_id: str,
+    mcp_type: Optional[str] = None,
+    user_id: str = Depends(get_current_user_id_from_jwt)
+):
+    """Get list of enabled MCP IDs for an agent"""
+    try:
+        toggle_service = MCPToggleService(db)
+        enabled_mcps = await toggle_service.get_enabled_mcps(
+            agent_id=agent_id,
+            user_id=user_id,
+            mcp_type=mcp_type
+        )
+        
+        return {"enabled_mcps": enabled_mcps}
+        
+    except Exception as e:
+        logger.error(f"Failed to get enabled MCPs: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/agents/{agent_id}/sync-social-toggles")
+async def sync_agent_social_toggles(
+    agent_id: str,
+    user_id: str = Depends(get_current_user_id_from_jwt)
+):
+    """Sync social media toggles for an agent - creates toggle entries for all connected social accounts"""
+    try:
+        from youtube_mcp.channels import YouTubeChannelService
+        
+        toggle_service = MCPToggleService(db)
+        created_count = 0
+        
+        # Sync YouTube channels
+        channel_service = YouTubeChannelService(db)
+        youtube_channels = await channel_service.get_user_channels(user_id)
+        
+        for channel in youtube_channels:
+            mcp_id = f"social.youtube.{channel['id']}"
+            
+            # Check if toggle already exists
+            existing = await toggle_service.is_enabled(agent_id, user_id, mcp_id)
+            
+            # Create toggle if it doesn't exist (will be disabled by default for social)
+            success = await toggle_service.set_toggle(
+                agent_id=agent_id,
+                user_id=user_id,
+                mcp_id=mcp_id,
+                enabled=False  # Default to disabled for security
+            )
+            
+            if success:
+                created_count += 1
+                logger.info(f"Created MCP toggle for agent {agent_id}, channel {channel['id']}")
+        
+        # In the future, add other social platforms here
+        # e.g., Instagram, Twitter, etc.
+        
+        return {
+            "success": True,
+            "message": f"Synced social toggles for agent {agent_id}",
+            "created_count": created_count,
+            "youtube_channels": len(youtube_channels)
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to sync social toggles for agent {agent_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))

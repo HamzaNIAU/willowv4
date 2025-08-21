@@ -53,11 +53,13 @@ export function useSubscriptionContext() {
 // but uses the shared context data with fallback for components outside dashboard
 export function useSharedSubscription() {
   const context = useContext(SubscriptionContext);
+  // Always call the hook to comply with React rules of hooks
+  const fallbackQuery = useSubscriptionQuery();
   
   if (!context) {
     // Fallback to the original hook if context is not available
     // This allows components outside the dashboard to still work
-    return useSubscriptionQuery();
+    return fallbackQuery;
   }
   
   const { subscriptionData, isLoading, error, refetch } = context;

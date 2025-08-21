@@ -22,20 +22,6 @@ import { extractDataProviderEndpointsData } from './_utils';
 import { ScrollArea } from '@/components/ui/scroll-area';
 
 const PROVIDER_CONFIG = {
-  'linkedin': {
-    name: 'LinkedIn Data Provider',
-    icon: Users,
-    color: 'from-blue-500 to-blue-600',
-    bgColor: 'bg-blue-50 dark:bg-blue-900/20',
-    textColor: 'text-blue-700 dark:text-blue-300'
-  },
-  'twitter': {
-    name: 'Twitter Data Provider',
-    icon: MessageCircle,
-    color: 'from-sky-400 to-sky-500',
-    bgColor: 'bg-sky-50 dark:bg-sky-900/20',
-    textColor: 'text-sky-700 dark:text-sky-300'
-  },
   'zillow': {
     name: 'Zillow Data Provider',
     icon: Home,
@@ -91,7 +77,7 @@ export function DataProviderEndpointsToolView({
 
   const providerConfig = serviceName && PROVIDER_CONFIG[serviceName as keyof typeof PROVIDER_CONFIG]
     ? PROVIDER_CONFIG[serviceName as keyof typeof PROVIDER_CONFIG]
-    : PROVIDER_CONFIG['linkedin'];
+    : PROVIDER_CONFIG['yahoo_finance'];
   const IconComponent = providerConfig.icon;
 
   const endpointCount = endpoints && typeof endpoints === 'object' ? Object.keys(endpoints).length : 0;

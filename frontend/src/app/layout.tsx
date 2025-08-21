@@ -151,9 +151,13 @@ export default function RootLayout({
             {children}
             <Toaster />
           </Providers>
-          <Analytics />
-          <GoogleAnalytics gaId="G-6ETJFB3PT3" />
-          <SpeedInsights />
+          {process.env.NODE_ENV === 'production' && (
+            <>
+              <Analytics />
+              <GoogleAnalytics gaId="G-6ETJFB3PT3" />
+              <SpeedInsights />
+            </>
+          )}
           <PostHogIdentify />
         </ThemeProvider>
       </body>

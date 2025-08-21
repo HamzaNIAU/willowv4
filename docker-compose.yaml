@@ -2,7 +2,7 @@ services:
   redis:
     image: redis:7-alpine
     ports:
-      - "6379:6379"
+      - "6380:6379"
     volumes:
       - redis_data:/data
       - ./backend/services/docker/redis.conf:/usr/local/etc/redis/redis.conf:ro
@@ -23,6 +23,11 @@ services:
       - "8000:8000"
     volumes:
       - ./backend/.env:/app/.env
+      - ./backend/youtube_mcp:/app/youtube_mcp:ro
+      - ./backend/agent:/app/agent:ro
+      - ./backend/api.py:/app/api.py:ro
+      - ./backend/files_api.py:/app/files_api.py:ro
+      - ./backend/services:/app/services:ro
     env_file:
       - ./backend/.env
     environment:
@@ -45,6 +50,9 @@ services:
     command: uv run dramatiq --skip-logging --processes 4 --threads 4 run_agent_background
     volumes:
       - ./backend/.env:/app/.env:ro
+      - ./backend/agent:/app/agent:ro
+      - ./backend/services:/app/services:ro
+      - ./backend/youtube_mcp:/app/youtube_mcp:ro
     env_file:
       - ./backend/.env
     environment:
@@ -52,6 +60,7 @@ services:
       - REDIS_PORT=6379
       - REDIS_PASSWORD=
       - REDIS_SSL=False
+      - BACKEND_URL=http://backend:8000
     depends_on:
       redis:
         condition: service_healthy

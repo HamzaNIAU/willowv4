@@ -73,6 +73,8 @@ async def lifespan(app: FastAPI):
         credentials_api.initialize(db)
         template_api.initialize(db)
         composio_api.initialize(db)
+        youtube_api.initialize(db)
+        files_api_initialize(db)
         
         yield
         
@@ -158,6 +160,7 @@ api_router = APIRouter()
 # Include all API routers without individual prefixes
 api_router.include_router(agent_api.router)
 api_router.include_router(sandbox_api.router)
+# Billing router enabled with mock responses (no Stripe required)
 api_router.include_router(billing_api.router)
 api_router.include_router(feature_flags_api.router)
 api_router.include_router(api_keys_api.router)
@@ -190,6 +193,13 @@ api_router.include_router(admin_api.router)
 
 from composio_integration import api as composio_api
 api_router.include_router(composio_api.router)
+
+from youtube_mcp import api as youtube_api
+api_router.include_router(youtube_api.router)
+
+from files_api import router as files_router
+from files_api import initialize as files_api_initialize
+api_router.include_router(files_router)
 
 @api_router.get("/health")
 async def health_check():

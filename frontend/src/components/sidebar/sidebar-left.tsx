@@ -2,7 +2,7 @@
 
 import * as React from 'react';
 import Link from 'next/link';
-import { Bot, Menu, Store, Plus, Zap, ChevronRight, Loader2 } from 'lucide-react';
+import { Bot, Menu, Store, Plus, Zap, ChevronRight, Loader2, Share2 } from 'lucide-react';
 
 import { NavAgents } from '@/components/sidebar/nav-agents';
 import { NavUserWithTeams } from '@/components/sidebar/nav-user-with-teams';
@@ -170,22 +170,36 @@ export function SidebarLeft({
       </SidebarHeader>
       <SidebarContent className="[&::-webkit-scrollbar]:hidden [-ms-overflow-style:'none'] [scrollbar-width:'none']">
         <SidebarGroup>
-          <Link href="/dashboard">
-            <SidebarMenuButton 
-              className={cn('touch-manipulation', {
-                'bg-accent text-accent-foreground font-medium': pathname === '/dashboard',
-              })} 
-              onClick={() => {
-                posthog.capture('new_task_clicked');
-                if (isMobile) setOpenMobile(false);
-              }}
-            >
-              <Plus className="h-4 w-4 mr-1" />
-              <span className="flex items-center justify-between w-full">
-                New Task
-              </span>
-            </SidebarMenuButton>
-          </Link>
+          <SidebarMenu>
+            <SidebarMenuItem>
+              <Link href="/dashboard">
+                <SidebarMenuButton 
+                  className={cn('touch-manipulation', {
+                    'bg-accent text-accent-foreground font-medium': pathname === '/dashboard',
+                  })} 
+                  onClick={() => {
+                    posthog.capture('new_task_clicked');
+                    if (isMobile) setOpenMobile(false);
+                  }}
+                >
+                  <Plus className="h-4 w-4 mr-1" />
+                  <span className="flex items-center justify-between w-full">
+                    New Task
+                  </span>
+                </SidebarMenuButton>
+              </Link>
+            </SidebarMenuItem>
+            <SidebarMenuItem>
+              <Link href="/social-media">
+                <SidebarMenuButton className={cn('touch-manipulation', {
+                  'bg-accent text-accent-foreground font-medium': pathname === '/social-media',
+                })}>
+                  <Share2 className="h-4 w-4 mr-1" />
+                  <span>Social Media</span>
+                </SidebarMenuButton>
+              </Link>
+            </SidebarMenuItem>
+          </SidebarMenu>
           {!flagsLoading && customAgentsEnabled && (
             <SidebarMenu>
               <Collapsible

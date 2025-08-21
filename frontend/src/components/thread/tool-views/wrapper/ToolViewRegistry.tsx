@@ -34,6 +34,7 @@ import { ListPresentationTemplatesToolView } from '../ListPresentationTemplatesT
 import { SheetsToolView } from '../sheets-tools/sheets-tool-view';
 import { GetProjectStructureView } from '../web-dev/GetProjectStructureView';
 import { ImageEditGenerateToolView } from '../image-edit-generate-tool/ImageEditGenerateToolView';
+import { YouTubeToolView } from '../YouTubeToolView';
 
 
 export type ToolViewComponent = React.ComponentType<ToolViewProps>;
@@ -102,6 +103,33 @@ const defaultRegistry: ToolViewRegistryType = {
   'analyze-sheet': SheetsToolView,
   'visualize-sheet': SheetsToolView,
   'format-sheet': SheetsToolView,
+
+  // YouTube tool views - all variations for compatibility
+  // Hyphenated versions (what the XML parser converts to)
+  'youtube-authenticate': YouTubeToolView,
+  'youtube-channels': YouTubeToolView,
+  'youtube-upload-video': YouTubeToolView,
+  'youtube-list-captions': YouTubeToolView,
+  'youtube-download-caption': YouTubeToolView,
+  'youtube-list-channel-videos': YouTubeToolView,
+  'youtube-list-playlists': YouTubeToolView,
+  'youtube-list-subscriptions': YouTubeToolView,
+  'youtube-subscribe-channel': YouTubeToolView,
+  'youtube-manage-video': YouTubeToolView,
+  'youtube-smart-search': YouTubeToolView,
+  
+  // Underscore versions (actual backend tool names)
+  'youtube_authenticate': YouTubeToolView,
+  'youtube_channels': YouTubeToolView,
+  'youtube_upload_video': YouTubeToolView,
+  'youtube_list_captions': YouTubeToolView,
+  'youtube_download_caption': YouTubeToolView,
+  'youtube_list_channel_videos': YouTubeToolView,
+  'youtube_list_playlists': YouTubeToolView,
+  'youtube_list_subscriptions': YouTubeToolView,
+  'youtube_subscribe_channel': YouTubeToolView,
+  'youtube_manage_video': YouTubeToolView,
+  'youtube_smart_search': YouTubeToolView,
 
   'get-project-structure': GetProjectStructureView,
   'list-web-projects': GenericToolView,

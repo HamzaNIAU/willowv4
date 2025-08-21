@@ -261,7 +261,7 @@ export function AttachmentGroup({
                                     bg-black dark:bg-white
                                     border-3 border-sidebar
                                     text-white dark:text-black flex items-center justify-center
-                                    z-30 cursor-pointer"
+                                    z-10 cursor-pointer"
                                     onClick={() => onRemove(index)}
                                 >
                                     <TooltipProvider>

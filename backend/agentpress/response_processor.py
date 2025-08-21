@@ -1558,7 +1558,17 @@ class ResponseProcessor:
         tool_call_id = tool_call.get("id")
         
         # Process the output - if it's a JSON string, parse it back to an object
-        output = result.output if hasattr(result, 'output') else str(result)
+        # Check if result is a ToolResult object with proper output attribute
+        if hasattr(result, 'output'):
+            output = result.output
+        elif hasattr(result, 'to_dict'):
+            # If result has to_dict method, use it to get proper JSON-serializable data
+            result_dict = result.to_dict()
+            output = result_dict.get('output', str(result))
+        else:
+            # Last resort - convert to string (should rarely happen)
+            output = str(result)
+            
         if isinstance(output, str):
             try:
                 # Try to parse as JSON to provide structured data to frontend

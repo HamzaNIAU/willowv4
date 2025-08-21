@@ -1,6 +1,6 @@
 'use client';
 
-import React, { forwardRef, useEffect } from 'react';
+import React, { forwardRef, useEffect, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Paperclip, Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
@@ -62,6 +62,12 @@ const uploadFiles = async (
   queryClient?: any, // Add queryClient parameter for cache invalidation
 ) => {
   try {
+    // Early return if no sandboxId
+    if (!sandboxId) {
+      console.warn('No sandboxId provided for file upload');
+      return;
+    }
+    
     setIsUploading(true);
 
     const newUploadedFiles: UploadedFile[] = [];
@@ -158,6 +164,8 @@ const handleFiles = async (
   messages: any[] = [], // Add messages parameter
   queryClient?: any, // Add queryClient parameter
 ) => {
+  // Always treat all files as regular uploads
+  // No automatic platform detection - let the AI decide based on user's message
   if (sandboxId) {
     // If we have a sandboxId, upload files directly
     await uploadFiles(files, sandboxId, setUploadedFiles, setIsUploading, messages, queryClient);
@@ -227,7 +235,8 @@ export const FileUploadHandler = forwardRef<
       if (!event.target.files || event.target.files.length === 0) return;
 
       const files = Array.from(event.target.files);
-      // Use the helper function instead of the static method
+      
+      // Use the simplified helper function
       handleFiles(
         files,
         sandboxId,
@@ -267,7 +276,7 @@ export const FileUploadHandler = forwardRef<
               </span>
             </TooltipTrigger>
             <TooltipContent side="top">
-              <p>{isLoggedIn ? 'Attach files' : 'Please login to attach files'}</p>
+              <p>{isLoggedIn ? 'Attach files (images, documents, videos, etc.)' : 'Please login to attach files'}</p>
             </TooltipContent>
           </Tooltip>
         </TooltipProvider>
@@ -278,6 +287,7 @@ export const FileUploadHandler = forwardRef<
           className="hidden"
           onChange={processFileUpload}
           multiple
+          accept="*/*"
         />
       </>
     );

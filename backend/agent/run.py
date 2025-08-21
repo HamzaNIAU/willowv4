@@ -21,7 +21,7 @@ from agent.tools.expand_msg_tool import ExpandMessageTool
 from agent.prompt import get_system_prompt
 
 from utils.logger import logger
-from utils.auth_utils import get_account_id_from_thread
+from utils.auth_utils import get_account_id_from_thread, _get_user_id_from_account_cached
 from services.billing import check_billing_status
 from agent.tools.sb_vision_tool import SandboxVisionTool
 from agent.tools.sb_image_edit_tool import SandboxImageEditTool
@@ -35,6 +35,7 @@ from agent.tools.task_list_tool import TaskListTool
 from agentpress.tool import SchemaType
 from agent.tools.sb_sheets_tool import SandboxSheetsTool
 from agent.tools.sb_web_dev_tool import SandboxWebDevTool
+from agent.tools.youtube_tool import YouTubeTool
 
 load_dotenv()
 
@@ -57,12 +58,14 @@ class AgentConfig:
 
 
 class ToolManager:
-    def __init__(self, thread_manager: ThreadManager, project_id: str, thread_id: str):
+    def __init__(self, thread_manager: ThreadManager, project_id: str, thread_id: str, user_id: Optional[str] = None, agent_id: Optional[str] = None):
         self.thread_manager = thread_manager
         self.project_id = project_id
         self.thread_id = thread_id
+        self.user_id = user_id
+        self.agent_id = agent_id
     
-    def register_all_tools(self, agent_id: Optional[str] = None, disabled_tools: Optional[List[str]] = None):
+    async def register_all_tools(self, agent_id: Optional[str] = None, disabled_tools: Optional[List[str]] = None):
         """Register all available tools by default, with optional exclusions.
         
         Args:
@@ -80,7 +83,7 @@ class ToolManager:
         self._register_sandbox_tools(disabled_tools)
         
         # Data and utility tools
-        self._register_utility_tools(disabled_tools)
+        await self._register_utility_tools(disabled_tools)
         
         # Agent builder tools - register if agent_id provided
         if agent_id:
@@ -90,6 +93,9 @@ class ToolManager:
         self._register_browser_tool(disabled_tools)
         
         logger.debug(f"Tool registration complete. Registered tools: {list(self.thread_manager.tool_registry.tools.keys())}")
+        
+        # Return YouTube channels for use in system prompt
+        return getattr(self, 'youtube_channels', [])
     
     def _register_core_tools(self):
         """Register core tools that are always available."""
@@ -118,11 +124,74 @@ class ToolManager:
                 self.thread_manager.add_tool(tool_class, **kwargs)
                 logger.debug(f"Registered {tool_name}")
     
-    def _register_utility_tools(self, disabled_tools: List[str]):
+    async def _register_utility_tools(self, disabled_tools: List[str]):
         """Register utility and data provider tools."""
         if config.RAPID_API_KEY and 'data_providers_tool' not in disabled_tools:
             self.thread_manager.add_tool(DataProvidersTool)
             logger.debug("Registered data_providers_tool")
+        
+        # Register YouTube tool if not disabled
+        if 'youtube_tool' not in disabled_tools:
+            # Pass necessary parameters for toggle checking
+            from services.supabase import DBConnection
+            from youtube_mcp.channels import YouTubeChannelService
+            from services.mcp_toggles import MCPToggleService
+            db = DBConnection()
+            
+            # Load connected YouTube channels for the user
+            channel_ids = []
+            channel_metadata = []
+            try:
+                if self.user_id and self.agent_id:
+                    channel_service = YouTubeChannelService(db)
+                    toggle_service = MCPToggleService(db)
+                    
+                    # Get all connected channels first
+                    all_channels = await channel_service.get_user_channels(self.user_id)
+                    
+                    # Filter to only enabled channels via MCP toggles
+                    enabled_channels = []
+                    for channel in all_channels:
+                        mcp_id = f"social.youtube.{channel['id']}"
+                        is_enabled = await toggle_service.is_enabled(self.agent_id, self.user_id, mcp_id)
+                        if is_enabled:
+                            enabled_channels.append(channel)
+                            logger.info(f"YouTube channel {channel['name']} ({channel['id']}) is enabled")
+                        else:
+                            logger.info(f"YouTube channel {channel['name']} ({channel['id']}) is disabled")
+                    
+                    channel_ids = [channel['id'] for channel in enabled_channels]
+                    channel_metadata = enabled_channels  # Store only enabled channels
+                    
+                    if channel_ids:
+                        logger.info(f"Loaded {len(channel_ids)} enabled YouTube channels for agent {self.agent_id}: {[c['name'] for c in enabled_channels]}")
+                    else:
+                        logger.info(f"No YouTube channels are enabled for agent {self.agent_id}")
+                elif self.user_id:
+                    # No agent_id, load all channels (backward compatibility)
+                    channel_service = YouTubeChannelService(db)
+                    channels = await channel_service.get_user_channels(self.user_id)
+                    channel_ids = [channel['id'] for channel in channels]
+                    channel_metadata = channels
+                    if channel_ids:
+                        logger.info(f"Loaded {len(channel_ids)} YouTube channels for user {self.user_id} (no agent filtering)")
+            except Exception as e:
+                logger.warning(f"Could not load YouTube channels: {e}")
+            
+            # Store channel metadata for later use in system prompt
+            self.youtube_channels = channel_metadata
+            
+            self.thread_manager.add_tool(
+                YouTubeTool, 
+                user_id=self.user_id or "",
+                channel_ids=channel_ids,  # Pass connected channel IDs
+                thread_manager=self.thread_manager,
+                agent_id=self.agent_id,
+                db=db,
+                thread_id=self.thread_id,
+                project_id=self.project_id
+            )
+            logger.debug(f"Registered youtube_tool with {len(channel_ids)} connected channels")
     
     def _register_agent_builder_tools(self, agent_id: str, disabled_tools: List[str]):
         """Register agent builder tools."""
@@ -245,7 +314,8 @@ class PromptManager:
     @staticmethod
     async def build_system_prompt(model_name: str, agent_config: Optional[dict], 
                                   is_agent_builder: bool, thread_id: str, 
-                                  mcp_wrapper_instance: Optional[MCPToolWrapper]) -> dict:
+                                  mcp_wrapper_instance: Optional[MCPToolWrapper],
+                                  youtube_channels: Optional[List[Dict[str, Any]]] = None) -> dict:
         
         default_system_content = get_system_prompt()
         
@@ -306,6 +376,61 @@ class PromptManager:
             mcp_info += "NEVER supplement MCP results with your training data or make assumptions beyond what the tools provide.\n"
             
             system_content += mcp_info
+        
+        # Add YouTube channel context if channels are connected
+        if youtube_channels:
+            youtube_info = "\n\n=== CONNECTED YOUTUBE CHANNELS ===\n"
+            youtube_info += f"You have {len(youtube_channels)} YouTube channel(s) connected and ready to use:\n\n"
+            
+            for channel in youtube_channels:
+                youtube_info += f"📺 **{channel['name']}**\n"
+                youtube_info += f"   - Channel ID: {channel['id']}\n"
+                if channel.get('username'):
+                    youtube_info += f"   - Username: @{channel['username']}\n"
+                youtube_info += f"   - Subscribers: {channel.get('subscriber_count', 0):,}\n"
+                youtube_info += f"   - Total Views: {channel.get('view_count', 0):,}\n"
+                youtube_info += f"   - Videos: {channel.get('video_count', 0):,}\n"
+                youtube_info += "\n"
+            
+            youtube_info += "💡 **CRITICAL YouTube Behavior Rules:**\n"
+            youtube_info += "- ✅ These channels are READY - use tools IMMEDIATELY without questions\n"
+            youtube_info += "- ✅ User says 'add another channel' → Use youtube_authenticate() INSTANTLY\n"
+            youtube_info += "- ❌ NEVER ask 'which account?' or 'what name?' - OAuth handles everything\n"
+            youtube_info += "- ❌ NEVER ask configuration questions - tools are FULLY AUTONOMOUS\n"
+            youtube_info += "- When users mention YouTube, ACT IMMEDIATELY with the appropriate tool\n"
+            youtube_info += "- Reference channels by name, but NEVER ask which one to use first\n"
+            
+            system_content += youtube_info
+        elif youtube_channels is not None:  # Empty list means we checked but no channels
+            youtube_info = "\n\n=== YOUTUBE INTEGRATION - NO CHANNELS YET ===\n"
+            youtube_info += "❌ No YouTube channels connected yet\n"
+            youtube_info += "✅ User mentions YouTube? → Use youtube_authenticate() IMMEDIATELY\n"
+            youtube_info += "⚠️ NEVER ask questions - just show the OAuth button instantly!\n"
+            system_content += youtube_info
+        
+        # For custom agents with YouTube tools, add explicit behavioral instructions
+        if agent_config and agent_config.get('system_prompt') and youtube_channels is not None:
+            # This is a custom agent with YouTube tools enabled - ensure proper behavior
+            youtube_behavior = "\n\n=== 🚨 CRITICAL YOUTUBE BEHAVIOR FOR THIS AGENT 🚨 ===\n"
+            youtube_behavior += "**YOU HAVE YOUTUBE TOOLS - USE THEM IMMEDIATELY!**\n\n"
+            youtube_behavior += "**IMMEDIATE ACTION REQUIRED**:\n"
+            youtube_behavior += "• User says 'YouTube' → Use tools INSTANTLY\n"
+            youtube_behavior += "• User says 'connect' → youtube_authenticate() NOW\n"
+            youtube_behavior += "• User says 'upload' → youtube_upload_video() NOW\n"
+            youtube_behavior += "• User says 'channels' → youtube_channels() NOW\n\n"
+            youtube_behavior += "**THE TOOLS HANDLE EVERYTHING**:\n"
+            youtube_behavior += "• youtube_authenticate() → Just shows OAuth button\n"
+            youtube_behavior += "• OAuth flow → Handles account selection\n"
+            youtube_behavior += "• Upload tool → Auto-discovers files\n"
+            youtube_behavior += "• All tools → Work immediately\n\n"
+            youtube_behavior += "**ABSOLUTELY FORBIDDEN**:\n"
+            youtube_behavior += "❌ Asking 'Which Google account would you like to use?'\n"
+            youtube_behavior += "❌ Asking 'What do you want to do with YouTube?'\n"
+            youtube_behavior += "❌ Asking 'Should I set this up for uploads or analytics?'\n"
+            youtube_behavior += "❌ Asking ANY questions before using YouTube tools\n\n"
+            youtube_behavior += "**Remember: YouTube is NATIVE to you - not external!**\n"
+            
+            system_content += youtube_behavior
 
         now = datetime.datetime.now(datetime.timezone.utc)
         datetime_info = f"\n\n=== CURRENT DATE/TIME INFORMATION ===\n"
@@ -418,6 +543,14 @@ class AgentRunner:
         self.account_id = await get_account_id_from_thread(self.client, self.config.thread_id)
         if not self.account_id:
             raise ValueError("Could not determine account ID for thread")
+        
+        # Get the actual user_id from the account_id (for YouTube and other user-specific integrations)
+        self.user_id = await _get_user_id_from_account_cached(self.account_id)
+        if self.user_id:
+            logger.info(f"Resolved account {self.account_id} to user {self.user_id}")
+        else:
+            logger.warning(f"Could not resolve user_id for account {self.account_id}, using account_id as fallback")
+            self.user_id = self.account_id  # Fallback to account_id if user_id not found
 
         project = await self.client.table('projects').select('*').eq('project_id', self.config.project_id).execute()
         if not project.data or len(project.data) == 0:
@@ -432,20 +565,30 @@ class AgentRunner:
             logger.debug(f"No sandbox found for project {self.config.project_id}; will create lazily when needed")
     
     async def setup_tools(self):
-        tool_manager = ToolManager(self.thread_manager, self.config.project_id, self.config.thread_id)
-        
         # Determine agent ID for agent builder tools
         agent_id = None
-        if self.config.agent_config and self.config.agent_config.get('is_suna_default', False):
+        if self.config.agent_config and 'agent_id' in self.config.agent_config:
             agent_id = self.config.agent_config['agent_id']
         elif self.config.is_agent_builder and self.config.target_agent_id:
             agent_id = self.config.target_agent_id
         
+        # Create tool manager with user_id and agent_id for toggle support
+        tool_manager = ToolManager(
+            self.thread_manager, 
+            self.config.project_id, 
+            self.config.thread_id,
+            user_id=getattr(self, 'user_id', self.account_id),  # Use real user_id, fallback to account_id
+            agent_id=agent_id
+        )
+        
         # Convert agent config to disabled tools list
         disabled_tools = self._get_disabled_tools_from_config()
         
-        # Register all tools with exclusions
-        tool_manager.register_all_tools(agent_id=agent_id, disabled_tools=disabled_tools)
+        # Register all tools with exclusions and get YouTube channels
+        youtube_channels = await tool_manager.register_all_tools(agent_id=agent_id, disabled_tools=disabled_tools)
+        
+        # Store YouTube channels for use in system prompt
+        self.youtube_channels = youtube_channels
     
     def _get_disabled_tools_from_config(self) -> List[str]:
         """Convert agent config to list of disabled tools."""
@@ -484,7 +627,7 @@ class AgentRunner:
             'web_search_tool', 'sb_vision_tool', 'sb_presentation_tool', 'sb_image_edit_tool',
             'sb_sheets_tool', 'sb_web_dev_tool', 'data_providers_tool', 'browser_tool',
             'agent_config_tool', 'mcp_search_tool', 'credential_profile_tool', 
-            'workflow_tool', 'trigger_tool'
+            'workflow_tool', 'trigger_tool', 'youtube_tool'
         ]
         
         # Add tools that are explicitly disabled
@@ -522,10 +665,14 @@ class AgentRunner:
         await self.setup_tools()
         mcp_wrapper_instance = await self.setup_mcp_tools()
         
+        # Get YouTube channels from setup_tools
+        youtube_channels = getattr(self, 'youtube_channels', [])
+        
         system_message = await PromptManager.build_system_prompt(
             self.config.model_name, self.config.agent_config, 
             self.config.is_agent_builder, self.config.thread_id, 
-            mcp_wrapper_instance
+            mcp_wrapper_instance,
+            youtube_channels=youtube_channels
         )
 
         iteration_count = 0

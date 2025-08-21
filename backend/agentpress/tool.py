@@ -41,6 +41,17 @@ class ToolResult:
     """
     success: bool
     output: str
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert ToolResult to dictionary for JSON serialization."""
+        return {
+            "success": self.success,
+            "output": self.output
+        }
+    
+    def to_json(self) -> str:
+        """Convert ToolResult to JSON string."""
+        return json.dumps(self.to_dict())
 
 class Tool(ABC):
     """Abstract base class for all tools.

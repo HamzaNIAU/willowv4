@@ -45,8 +45,6 @@ const getTriggerIcon = (triggerType: string) => {
       return <Mail className="h-5 w-5" />;
     case 'github':
       return <Github className="h-5 w-5" />;
-    case 'discord':
-      return <Gamepad2 className="h-5 w-5" />;
     default:
       return <Activity className="h-5 w-5" />;
   }
@@ -66,8 +64,6 @@ const getTriggerTypeColor = (triggerType: string) => {
       return 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-300';
     case 'github':
       return 'bg-gray-100 text-gray-800 dark:bg-gray-900 dark:text-gray-300';
-    case 'discord':
-      return 'bg-indigo-100 text-indigo-800 dark:bg-indigo-900 dark:text-indigo-300';
     default:
       return 'bg-gray-100 text-gray-800 dark:bg-gray-900 dark:text-gray-300';
   }

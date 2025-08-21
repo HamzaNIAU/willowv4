@@ -24,22 +24,6 @@ import { extractDataProviderCallData } from './_utils';
 import { ScrollArea } from '@/components/ui/scroll-area';
 
 const PROVIDER_CONFIG = {
-  'linkedin': {
-    name: 'LinkedIn Data Provider',
-    icon: Users,
-    color: 'from-blue-500 to-blue-600',
-    bgColor: 'bg-blue-50 dark:bg-blue-900/20',
-    textColor: 'text-blue-700 dark:text-blue-300',
-    borderColor: 'border-blue-200 dark:border-blue-800'
-  },
-  'twitter': {
-    name: 'Twitter Data Provider',
-    icon: MessageCircle,
-    color: 'from-sky-400 to-sky-500',
-    bgColor: 'bg-sky-50 dark:bg-sky-900/20',
-    textColor: 'text-sky-700 dark:text-sky-300',
-    borderColor: 'border-sky-200 dark:border-sky-800'
-  },
   'zillow': {
     name: 'Zillow Data Provider',
     icon: Home,
@@ -103,7 +87,7 @@ export function ExecuteDataProviderCallToolView({
   const providerKey = serviceName?.toLowerCase() as keyof typeof PROVIDER_CONFIG;
   const providerConfig = providerKey && PROVIDER_CONFIG[providerKey]
     ? PROVIDER_CONFIG[providerKey]
-    : PROVIDER_CONFIG['linkedin'];
+    : PROVIDER_CONFIG['yahoo_finance'];
 
   const IconComponent = providerConfig.icon;
 

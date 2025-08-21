@@ -1,0 +1,554 @@
+'use client'
+
+import React from 'react';
+import {
+  Youtube,
+  Users,
+  Eye,
+  Video,
+  CheckCircle,
+  Copy,
+  ExternalLink,
+  TrendingUp,
+  Clock,
+  PlayCircle
+} from 'lucide-react';
+import { ToolViewProps } from './types';
+import { formatTimestamp, getToolTitle, extractToolData } from './utils';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { LoadingState } from './shared/LoadingState';
+import { toast } from 'sonner';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
+
+interface YouTubeChannel {
+  id: string;
+  name: string;
+  username?: string;
+  profile_picture?: string;
+  subscriber_count?: number;
+  view_count?: number;
+  video_count?: number;
+}
+
+function formatNumber(num: number | undefined): string {
+  if (!num) return '0';
+  if (num >= 1000000) {
+    return (num / 1000000).toFixed(1).replace(/\.0$/, '') + 'M';
+  }
+  if (num >= 1000) {
+    return (num / 1000).toFixed(1).replace(/\.0$/, '') + 'K';
+  }
+  return num.toString();
+}
+
+function formatLargeNumber(num: number | undefined): string {
+  if (!num) return '0';
+  return num.toLocaleString();
+}
+
+export function YouTubeToolView({
+  name = 'youtube-channels',
+  assistantContent,
+  toolContent,
+  assistantTimestamp,
+  toolTimestamp,
+  isSuccess = true,
+  isStreaming = false,
+}: ToolViewProps) {
+  const [copiedId, setCopiedId] = React.useState<string | null>(null);
+
+  const handleCopyChannelId = (channelId: string) => {
+    navigator.clipboard.writeText(channelId);
+    setCopiedId(channelId);
+    toast.success('Channel ID copied to clipboard');
+    setTimeout(() => setCopiedId(null), 2000);
+  };
+
+  // Extract the tool data
+  const { toolResult } = extractToolData(toolContent);
+  
+  if (isStreaming || (!toolResult?.toolOutput && !toolContent)) {
+    return <LoadingState title="Fetching YouTube channels..." />;
+  }
+
+  // Parse the output
+  let channels: YouTubeChannel[] = [];
+  let message = '';
+  let actionNeeded = '';
+  let authUrl = '';
+  let buttonText = '';
+  let outputToParse: any = null;
+  
+  try {
+    // First check if toolContent has the structured tool_execution format
+    
+    if (toolContent) {
+      // Handle structured tool_execution format from backend
+      if (typeof toolContent === 'object' && toolContent !== null) {
+        const toolContentObj = toolContent as any;
+        if ('tool_execution' in toolContentObj) {
+          const toolExecution = toolContentObj.tool_execution;
+          if (toolExecution?.result?.output) {
+            outputToParse = toolExecution.result.output;
+          }
+        }
+      } 
+      // Handle string that might be JSON with tool_execution
+      else if (typeof toolContent === 'string') {
+        try {
+          const parsed = JSON.parse(toolContent);
+          if (parsed?.tool_execution?.result?.output) {
+            outputToParse = parsed.tool_execution.result.output;
+          } else {
+            outputToParse = parsed;
+          }
+        } catch {
+          outputToParse = toolContent;
+        }
+      }
+      // Handle other object formats
+      else if (typeof toolContent === 'object' && toolContent !== null) {
+        const obj = toolContent as any;
+        // Check if it's wrapped in content field
+        if ('content' in obj) {
+          // Content might be a string with tool_execution JSON
+          if (typeof obj.content === 'string') {
+            try {
+              const parsed = JSON.parse(obj.content);
+              if (parsed?.tool_execution?.result?.output) {
+                outputToParse = parsed.tool_execution.result.output;
+              } else {
+                outputToParse = parsed;
+              }
+            } catch {
+              outputToParse = obj.content;
+            }
+          } else {
+            outputToParse = obj.content;
+          }
+        } else if ('output' in obj) {
+          outputToParse = obj.output;
+        } else {
+          outputToParse = obj;
+        }
+      }
+    }
+    
+    // Fallback to toolResult if available
+    if (!outputToParse && toolResult?.toolOutput) {
+      outputToParse = toolResult.toolOutput;
+    }
+    
+    // Now parse the output
+    if (outputToParse) {
+      let parsedData: any;
+      
+      // If it's a string, try to parse as JSON
+      if (typeof outputToParse === 'string') {
+        try {
+          parsedData = JSON.parse(outputToParse);
+        } catch (jsonError) {
+          // If JSON parsing fails, check if it's a Python ToolResult string
+          const toolResultMatch = outputToParse.match(/ToolResult\(success=(\w+),\s*output="(.*)"\)/);
+          if (toolResultMatch) {
+            const isSuccess = toolResultMatch[1] === 'True';
+            const outputStr = toolResultMatch[2];
+            if (isSuccess && outputStr) {
+              try {
+                // The output might have escaped quotes, try to parse it
+                const unescaped = outputStr.replace(/\\"/g, '"').replace(/\\n/g, '\n');
+                parsedData = JSON.parse(unescaped);
+              } catch {
+                console.error('Failed to parse ToolResult output:', outputStr);
+              }
+            }
+          }
+        }
+      } else {
+        parsedData = outputToParse;
+      }
+      
+      // Extract channels and message from parsed data
+      if (parsedData) {
+        if (parsedData.channel && !parsedData.channels) {
+          // Single channel format
+          channels = [parsedData.channel];
+          message = parsedData.message || `Analytics for ${parsedData.channel.name}`;
+        } else if (parsedData.channels !== undefined) {
+          // Multiple channels format
+          channels = parsedData.channels || [];
+          message = parsedData.message || '';
+          actionNeeded = parsedData.action_needed || '';
+          authUrl = parsedData.auth_url || '';
+          buttonText = parsedData.button_text || '';
+        } else if (parsedData.existing_channels !== undefined) {
+          // Authentication response format with existing channels
+          channels = parsedData.existing_channels || [];
+          message = parsedData.message || '';
+          authUrl = parsedData.auth_url || '';
+          buttonText = parsedData.button_text || '';
+          // Don't show action_needed for existing channels
+        } else if (Array.isArray(parsedData)) {
+          // Direct array of channels
+          channels = parsedData;
+        } else if (parsedData.id && parsedData.name) {
+          // Single channel object directly
+          channels = [parsedData];
+        }
+      }
+    }
+  } catch (e) {
+    console.error('Failed to parse YouTube channels data:', e);
+    console.error('Tool content:', toolContent);
+    console.error('Tool result:', toolResult);
+    console.error('Parsed channels:', channels);
+    console.error('Output to parse:', outputToParse);
+    channels = [];
+  }
+
+  const hasChannels = channels.length > 0;
+
+  // Debug logging for development
+  if (toolContent) {
+    console.log('[YouTubeToolView] Debug info:', {
+      hasChannels,
+      channelsCount: channels.length,
+      channels,
+      message: message?.substring(0, 100) + (message?.length > 100 ? '...' : ''),
+      authUrl: authUrl ? 'present' : 'absent',
+      buttonText,
+      toolContentType: typeof toolContent,
+      hasToolExecution: typeof toolContent === 'object' && toolContent !== null && 'tool_execution' in (toolContent as any)
+    });
+  }
+
+  return (
+    <Card className="overflow-hidden border-zinc-200 dark:border-zinc-700 shadow-lg">
+      {/* Header */}
+      <CardHeader className="pb-4 bg-gradient-to-r from-red-600 to-red-700 dark:from-red-800 dark:to-red-900">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            {/* YouTube Logo */}
+            <div className="flex items-center justify-center w-10 h-10 bg-white rounded-lg shadow-md p-1.5">
+              <img 
+                src="/platforms/youtube.svg" 
+                alt="YouTube"
+                className="w-full h-full object-contain"
+              />
+            </div>
+            <div>
+              <CardTitle className="text-lg font-bold text-white flex items-center gap-2">
+                YouTube Channels
+              </CardTitle>
+              {toolTimestamp && (
+                <p className="text-xs text-red-100 mt-0.5">
+                  {formatTimestamp(toolTimestamp)}
+                </p>
+              )}
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            {isSuccess && hasChannels && (
+              <Badge className="bg-green-500 text-white border-0 hover:bg-green-600">
+                <CheckCircle className="h-3 w-3 mr-1" />
+                Connected
+              </Badge>
+            )}
+            <Badge className="bg-white/20 text-white border-white/30 backdrop-blur-sm">
+              {channels.length} {channels.length === 1 ? 'Channel' : 'Channels'}
+            </Badge>
+          </div>
+        </div>
+      </CardHeader>
+
+      {/* Content */}
+      <CardContent className="p-4">
+        {!hasChannels ? (
+          <div className="py-6">
+            {message ? (
+              // Display the backend's helpful message
+              <div className="space-y-4">
+                <div className="flex justify-center mb-4">
+                  <Youtube className="h-12 w-12 text-zinc-400" />
+                </div>
+                <div className="prose prose-sm dark:prose-invert max-w-none">
+                  <div dangerouslySetInnerHTML={{ __html: message.replace(/\n/g, '<br />') }} />
+                </div>
+                {actionNeeded === 'connect_channels' && (
+                  <div className="mt-4 p-3 bg-blue-50 dark:bg-blue-950/30 rounded-lg border border-blue-200 dark:border-blue-800">
+                    <p className="text-sm text-blue-700 dark:text-blue-300">
+                      💡 Tip: You can also connect channels from Settings → Social Media
+                    </p>
+                  </div>
+                )}
+                {actionNeeded === 'enable_channels' && (
+                  <div className="mt-4 p-3 bg-yellow-50 dark:bg-yellow-950/30 rounded-lg border border-yellow-200 dark:border-yellow-800">
+                    <p className="text-sm text-yellow-700 dark:text-yellow-300">
+                      ⚡ Quick fix: Click the MCP button below to enable your channels
+                    </p>
+                  </div>
+                )}
+              </div>
+            ) : (
+              // Fallback message if no message from backend
+              <div className="text-center">
+                <Youtube className="h-12 w-12 mx-auto text-zinc-400 mb-3" />
+                <p className="text-sm text-zinc-600 dark:text-zinc-400">
+                  No YouTube channels available
+                </p>
+                <p className="text-xs text-zinc-500 dark:text-zinc-500 mt-1">
+                  Use the authenticate command to connect your YouTube account
+                </p>
+              </div>
+            )}
+          </div>
+        ) : (
+          <ScrollArea className="max-h-[500px]">
+            <div className="space-y-4">
+              {channels.map((channel) => (
+                <Card 
+                  key={channel.id} 
+                  className="overflow-hidden bg-gradient-to-r from-zinc-50 to-zinc-100 dark:from-zinc-900 dark:to-zinc-800 border border-zinc-200 dark:border-zinc-700 hover:shadow-xl transition-all duration-300"
+                >
+                  <div className="flex items-stretch">
+                    {/* Left side - Avatar and main info */}
+                    <div className="flex items-center gap-4 p-5 flex-1">
+                      {/* Channel Avatar */}
+                      <div className="shrink-0 relative">
+                        {channel.profile_picture ? (
+                          <div className="relative group">
+                            <img
+                              src={channel.profile_picture}
+                              alt={channel.name}
+                              className="w-20 h-20 rounded-full border-3 border-white dark:border-zinc-700 shadow-lg object-cover"
+                              onError={(e) => {
+                                const target = e.target as HTMLImageElement;
+                                target.onerror = null;
+                                target.src = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iODAiIGhlaWdodD0iODAiIHZpZXdCb3g9IjAgMCA4MCA4MCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPHJlY3Qgd2lkdGg9IjgwIiBoZWlnaHQ9IjgwIiByeD0iNDAiIGZpbGw9IiNGRjAwMDAiLz4KPHBhdGggZD0iTTU1IDQwTDMzIDI4VjUyTDU1IDQwWiIgZmlsbD0id2hpdGUiLz4KPC9zdmc+';
+                              }}
+                            />
+                            <div className="absolute -bottom-1 -right-1 w-7 h-7 bg-white dark:bg-zinc-900 rounded-full flex items-center justify-center shadow-md border border-zinc-200 dark:border-zinc-700 p-1">
+                              <img 
+                                src="/platforms/youtube.svg" 
+                                alt="YouTube"
+                                className="w-full h-full object-contain"
+                              />
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="w-20 h-20 rounded-full bg-gradient-to-br from-red-500 to-red-700 flex items-center justify-center shadow-lg">
+                            <Youtube className="h-10 w-10 text-white" />
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Channel Info */}
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-start justify-between">
+                          <div>
+                            <h4 className="text-lg font-bold text-zinc-900 dark:text-zinc-100">
+                              {channel.name}
+                            </h4>
+                            {channel.username && (
+                              <p className="text-sm text-zinc-600 dark:text-zinc-400 flex items-center gap-1">
+                                <span className="text-zinc-400">@</span>{channel.username}
+                              </p>
+                            )}
+                            
+                            {/* Stats Row */}
+                            <div className="flex flex-wrap items-center gap-4 mt-3">
+                              <div className="flex items-center gap-1.5">
+                                <Users className="h-4 w-4 text-red-600 dark:text-red-500" />
+                                <span className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">
+                                  {formatNumber(channel.subscriber_count)}
+                                </span>
+                                <span className="text-xs text-zinc-500">subscribers</span>
+                              </div>
+
+                              <div className="flex items-center gap-1.5">
+                                <Eye className="h-4 w-4 text-blue-600 dark:text-blue-500" />
+                                <span className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">
+                                  {formatNumber(channel.view_count)}
+                                </span>
+                                <span className="text-xs text-zinc-500">views</span>
+                              </div>
+
+                              <div className="flex items-center gap-1.5">
+                                <PlayCircle className="h-4 w-4 text-green-600 dark:text-green-500" />
+                                <span className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">
+                                  {channel.video_count}
+                                </span>
+                                <span className="text-xs text-zinc-500">videos</span>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Right side - Action buttons */}
+                    <div className="flex flex-col justify-center gap-2 p-4 bg-gradient-to-l from-zinc-100 to-transparent dark:from-zinc-800 dark:to-transparent">
+                      <Button
+                        className="bg-red-600 hover:bg-red-700 text-white font-medium px-4 py-2 flex items-center gap-2 shadow-md"
+                        onClick={() => window.open(`https://youtube.com/channel/${channel.id}`, '_blank')}
+                      >
+                        <img 
+                          src="/platforms/youtube.svg" 
+                          alt="YouTube"
+                          className="h-4 w-4 object-contain brightness-0 invert"
+                        />
+                        View Channel
+                      </Button>
+                      
+                      <Button
+                        variant="outline"
+                        className="border-zinc-300 dark:border-zinc-600 hover:bg-zinc-100 dark:hover:bg-zinc-700"
+                        onClick={() => handleCopyChannelId(channel.id)}
+                      >
+                        {copiedId === channel.id ? (
+                          <>
+                            <CheckCircle className="h-4 w-4 text-green-600 mr-2" />
+                            Copied!
+                          </>
+                        ) : (
+                          <>
+                            <Copy className="h-4 w-4 mr-2" />
+                            Copy ID
+                          </>
+                        )}
+                      </Button>
+                    </div>
+                  </div>
+                </Card>
+              ))}
+            </div>
+          </ScrollArea>
+        )}
+
+        {/* OAuth Button if auth URL is present */}
+        {authUrl && (
+          <div className="mt-4">
+            <Card className="border bg-gradient-to-r from-red-50 to-red-100 dark:from-red-950/30 dark:to-red-900/30 border-red-200 dark:border-red-800">
+              <CardContent className="p-4">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-lg overflow-hidden bg-white dark:bg-zinc-800 flex items-center justify-center p-2">
+                      <img 
+                        src="/platforms/youtube.svg" 
+                        alt="YouTube"
+                        className="w-full h-full object-contain"
+                      />
+                    </div>
+                    <div>
+                      <h3 className="font-semibold text-zinc-900 dark:text-zinc-100">
+                        Connect YouTube Account
+                      </h3>
+                      <p className="text-sm text-zinc-600 dark:text-zinc-400">
+                        Click to authorize access to your YouTube channel
+                      </p>
+                    </div>
+                  </div>
+                  <Button
+                    onClick={() => {
+                      // Open OAuth in popup like Social Media page
+                      const popup = window.open(
+                        authUrl,
+                        'youtube-auth',
+                        'width=600,height=700,resizable=yes,scrollbars=yes'
+                      );
+                      
+                      // Listen for auth completion
+                      const handleMessage = (event: MessageEvent) => {
+                        if (event.data?.type === 'youtube-auth-success') {
+                          popup?.close();
+                          
+                          // Show success toast with channel info
+                          const channel = event.data.channel;
+                          if (channel && channel.name) {
+                            toast.success(
+                              <div className="flex items-center gap-3">
+                                {channel.profile_picture && (
+                                  <img 
+                                    src={channel.profile_picture} 
+                                    alt="" 
+                                    className="w-8 h-8 rounded-full"
+                                  />
+                                )}
+                                <div>
+                                  <div className="font-semibold">Connected Successfully!</div>
+                                  <div className="text-sm opacity-90">
+                                    {channel.name} {channel.username && `• @${channel.username}`}
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          } else {
+                            toast.success('YouTube account connected successfully!');
+                          }
+                          
+                          window.removeEventListener('message', handleMessage);
+                          window.removeEventListener('storage', handleStorage);
+                          
+                          // Refresh the thread to show updated channels
+                          // This is better than full page reload
+                          setTimeout(() => {
+                            // Trigger a refresh of the conversation
+                            window.dispatchEvent(new CustomEvent('youtube-connected'));
+                          }, 1000);
+                        } else if (event.data?.type === 'youtube-auth-error') {
+                          popup?.close();
+                          toast.error(`Failed to connect: ${event.data.error || 'Unknown error'}`);
+                          window.removeEventListener('message', handleMessage);
+                          window.removeEventListener('storage', handleStorage);
+                        }
+                      };
+                      
+                      // Fallback: Listen for storage events in case postMessage fails
+                      const handleStorage = (event: StorageEvent) => {
+                        if (event.key === 'youtube-auth-result' && event.newValue) {
+                          try {
+                            const result = JSON.parse(event.newValue);
+                            if (result.type === 'youtube-auth-success') {
+                              handleMessage({ data: result } as MessageEvent);
+                              // Clean up the storage
+                              localStorage.removeItem('youtube-auth-result');
+                            }
+                          } catch (e) {
+                            console.error('Failed to parse storage event:', e);
+                          }
+                        }
+                      };
+                      
+                      window.addEventListener('message', handleMessage);
+                      window.addEventListener('storage', handleStorage);
+                    }}
+                    className="bg-red-600 hover:bg-red-700 text-white"
+                  >
+                    <img 
+                      src="/platforms/youtube.svg" 
+                      alt=""
+                      className="w-4 h-4 mr-2 brightness-0 invert"
+                    />
+                    {buttonText || 'Connect YouTube'}
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+        )}
+
+        {/* Summary Message */}
+        {message && !authUrl && (
+          <div className="mt-4 p-3 bg-zinc-50 dark:bg-zinc-900/50 rounded-lg border border-zinc-200 dark:border-zinc-700">
+            <p className="text-sm text-zinc-600 dark:text-zinc-400">
+              {message}
+            </p>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
