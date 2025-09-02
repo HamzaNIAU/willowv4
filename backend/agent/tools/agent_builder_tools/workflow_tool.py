@@ -80,7 +80,7 @@ class WorkflowTool(AgentBuilderBaseTool):
                 except Exception as e:
                     logger.warning(f"Failed to get version data for workflow tool: {e}")
             
-            agent_config = extract_agent_config(agent_data, version_data)
+            agent_config = await extract_agent_config(agent_data, version_data)
             
             available_tools = []
             

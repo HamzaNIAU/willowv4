@@ -23,6 +23,8 @@ import { AgentHeader, VersionAlert, AgentBuilderTab, ConfigurationTab } from '@/
 
 import { DEFAULT_AGENTPRESS_TOOLS } from '@/components/agents/tools';
 import { useExportAgent } from '@/hooks/react-query/agents/use-agent-export-import';
+import { useFeatureFlag } from '@/lib/feature-flags';
+import { useAgentSelection } from '@/lib/stores/agent-selection-store';
 
 interface FormData {
   name: string;
@@ -40,6 +42,9 @@ export default function AgentConfigurationPage() {
   const params = useParams();
   const agentId = params.agentId as string;
   const queryClient = useQueryClient();
+  const router = useRouter();
+  const { enabled: customAgentsEnabled, loading: flagLoading } = useFeatureFlag("custom_agents");
+  const { resetToDefault } = useAgentSelection();
 
   const { agent, versionData, isViewingOldVersion, isLoading, error } = useAgentVersionData({ agentId });
   const searchParams = useSearchParams();
@@ -73,6 +78,28 @@ export default function AgentConfigurationPage() {
 
   // Log the default tab selection for debugging
   console.log('🔄 Default tab selected:', initialTab, 'from URL param:', tabParam);
+
+  // Redirect non-suna-default agents when custom_agents is disabled
+  useEffect(() => {
+    if (!flagLoading && !customAgentsEnabled && agentId !== 'suna-default') {
+      console.log('Custom agents disabled, redirecting from agent:', agentId);
+      router.replace('/dashboard');
+    }
+  }, [flagLoading, customAgentsEnabled, agentId, router]);
+
+  // Handle errors by redirecting to suna-default
+  useEffect(() => {
+    if (error && agentId !== 'suna-default') {
+      console.log('Error loading agent, redirecting to suna-default:', error);
+      // Reset agent selection to default
+      resetToDefault();
+      // Preserve query parameters when redirecting
+      const currentParams = new URLSearchParams(window.location.search);
+      const queryString = currentParams.toString();
+      const redirectUrl = `/agents/config/suna-default${queryString ? `?${queryString}` : ''}`;
+      router.replace(redirectUrl);
+    }
+  }, [error, agentId, router, resetToDefault]);
 
   useEffect(() => {
     if (!agent) return;
@@ -112,12 +139,12 @@ export default function AgentConfigurationPage() {
     
     if (isSunaAgent) {
       if (restrictions.name_editable === false && formData.name !== originalData.name) {
-        toast.error("Suna's name cannot be modified.");
+        toast.error("Willow's name cannot be modified.");
         return;
       }
 
       if (restrictions.tools_editable === false && JSON.stringify(formData.agentpress_tools) !== JSON.stringify(originalData.agentpress_tools)) {
-        toast.error("Suna's default tools cannot be modified.");
+        toast.error("Willow's default tools cannot be modified.");
         return;
       }
     }

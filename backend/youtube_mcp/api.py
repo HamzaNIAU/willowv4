@@ -361,19 +361,69 @@ async def auth_callback(
 async def get_channels(
     user_id: str = Depends(get_current_user_id_from_jwt)
 ) -> Dict[str, Any]:
-    """Get user's YouTube channels"""
+    """Get user's YouTube channels with comprehensive error handling"""
     try:
-        channel_service = YouTubeChannelService(db)
-        channels = await channel_service.get_user_channels(user_id)
+        # Step 1: Initialize channel service
+        try:
+            channel_service = YouTubeChannelService(db)
+        except Exception as e:
+            logger.error(f"Failed to initialize YouTubeChannelService: {e}")
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to initialize channel service. Please try again later."
+            )
+        
+        # Step 2: Fetch channels with proper error handling
+        try:
+            channels = await channel_service.get_user_channels(user_id)
+        except Exception as e:
+            logger.error(f"Database error fetching channels for user {user_id}: {e}")
+            # Provide helpful message based on error type
+            if "connection" in str(e).lower():
+                raise HTTPException(
+                    status_code=503,
+                    detail="Unable to connect to database. Please try again in a moment."
+                )
+            elif "timeout" in str(e).lower():
+                raise HTTPException(
+                    status_code=504,
+                    detail="Request timed out. Please try again."
+                )
+            else:
+                raise HTTPException(
+                    status_code=500,
+                    detail="Failed to fetch YouTube channels. Please try refreshing the page."
+                )
+        
+        # Step 3: Handle empty channels gracefully
+        if not channels:
+            logger.info(f"No YouTube channels found for user {user_id}")
+            return {
+                "success": True,
+                "channels": [],
+                "count": 0,
+                "message": "No YouTube channels connected. Connect a channel to get started."
+            }
+        
+        # Step 4: Log success and return
+        logger.info(f"Successfully fetched {len(channels)} channels for user {user_id}")
         
         return {
             "success": True,
             "channels": channels,
-            "count": len(channels)
+            "count": len(channels),
+            "message": f"Found {len(channels)} connected channel{'s' if len(channels) != 1 else ''}"
         }
+        
+    except HTTPException:
+        raise  # Re-raise HTTP exceptions
     except Exception as e:
-        logger.error(f"Failed to get YouTube channels: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        # Catch-all for unexpected errors
+        logger.error(f"Unexpected error in get_channels: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail="An unexpected error occurred while fetching channels. Please try again later."
+        )
 
 
 @router.get("/channels/{channel_id}")
@@ -615,51 +665,127 @@ async def prepare_upload(
     user_id: str = Depends(get_current_user_id_from_jwt)
 ) -> Dict[str, Any]:
     """
-    Prepare a video file for YouTube upload.
+    Prepare a video file for YouTube upload with comprehensive error handling.
     Creates a reference that can be used by the AI agent.
     """
     try:
-        # Initialize file service
-        file_service = YouTubeFileService(db)
-        
-        # Read file data
-        file_data = await file.read()
-        
-        # Detect file type if not specified
-        if file_type == "auto":
-            detected_type = file_service.detect_file_type(file.content_type, file.filename)
-            if detected_type == "unknown":
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Could not determine file type for {file.filename}"
-                )
-            file_type = detected_type
-        
-        # Validate file type
-        if file_type not in ["video", "thumbnail"]:
+        # Step 1: Validate file exists and has content
+        if not file or not file.filename:
+            logger.error(f"No file provided for upload")
             raise HTTPException(
                 status_code=400,
-                detail="file_type must be 'video' or 'thumbnail'"
+                detail="No file provided. Please select a file to upload."
             )
         
-        # Create reference based on file type
-        if file_type == "video":
-            result = await file_service.create_video_reference(
-                user_id=user_id,
-                file_name=file.filename,
-                file_data=file_data,
-                mime_type=file.content_type
-            )
-        else:
-            result = await file_service.create_thumbnail_reference(
-                user_id=user_id,
-                file_name=file.filename,
-                file_data=file_data,
-                mime_type=file.content_type
+        # Step 2: Initialize file service with error handling
+        try:
+            file_service = YouTubeFileService(db)
+        except Exception as e:
+            logger.error(f"Failed to initialize YouTubeFileService: {e}")
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to initialize upload service. Please try again later."
             )
         
-        logger.info(f"Prepared {file_type} upload for user {user_id}: {result['reference_id']}")
+        # Step 3: Read file data with size validation
+        try:
+            file_data = await file.read()
+            
+            # Check if file is empty
+            if not file_data or len(file_data) == 0:
+                logger.error(f"Empty file uploaded: {file.filename}")
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"The file '{file.filename}' is empty. Please select a valid file."
+                )
+            
+            # Check file size (128GB max for YouTube)
+            max_size = 128 * 1024 * 1024 * 1024  # 128GB in bytes
+            if len(file_data) > max_size:
+                logger.error(f"File too large: {len(file_data)} bytes")
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"File size exceeds maximum allowed (128GB). Your file is {len(file_data) / (1024**3):.2f}GB."
+                )
+                
+        except HTTPException:
+            raise  # Re-raise HTTP exceptions
+        except Exception as e:
+            logger.error(f"Failed to read file data: {e}")
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to read file data. The file may be corrupted or inaccessible."
+            )
         
+        # Step 4: Detect file type with better error messages
+        if file_type == "auto":
+            try:
+                detected_type = file_service.detect_file_type(file.content_type, file.filename)
+                if detected_type == "unknown":
+                    logger.error(f"Unknown file type: {file.content_type} for {file.filename}")
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Could not determine if '{file.filename}' is a video or image. Supported video formats: MP4, MOV, AVI, MKV. Supported image formats: JPG, PNG, GIF."
+                    )
+                file_type = detected_type
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error(f"Error detecting file type: {e}")
+                raise HTTPException(
+                    status_code=500,
+                    detail="Failed to detect file type. Please specify if this is a video or thumbnail."
+                )
+        
+        # Step 5: Validate file type
+        if file_type not in ["video", "thumbnail"]:
+            logger.error(f"Invalid file type specified: {file_type}")
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid file type '{file_type}'. Must be 'video' or 'thumbnail'."
+            )
+        
+        # Step 6: Create reference with specific error handling
+        try:
+            if file_type == "video":
+                result = await file_service.create_video_reference(
+                    user_id=user_id,
+                    file_name=file.filename,
+                    file_data=file_data,
+                    mime_type=file.content_type
+                )
+            else:
+                result = await file_service.create_thumbnail_reference(
+                    user_id=user_id,
+                    file_name=file.filename,
+                    file_data=file_data,
+                    mime_type=file.content_type
+                )
+                
+            logger.info(f"Successfully prepared {file_type} upload for user {user_id}: {result['reference_id']}")
+            
+        except ValueError as ve:
+            # Validation errors from file service
+            logger.error(f"Validation error: {ve}")
+            raise HTTPException(
+                status_code=400,
+                detail=str(ve)
+            )
+        except Exception as e:
+            logger.error(f"Failed to create {file_type} reference: {e}", exc_info=True)
+            error_msg = f"Failed to process {file_type}. "
+            if "file_data" in str(e):
+                error_msg += "Database storage error. Please contact support."
+            elif "permission" in str(e).lower():
+                error_msg += "Permission denied. Please check your account status."
+            else:
+                error_msg += "Please try again or contact support if the problem persists."
+            raise HTTPException(
+                status_code=500,
+                detail=error_msg
+            )
+        
+        # Step 7: Return success response
         return {
             "success": True,
             "reference_id": result["reference_id"],
@@ -668,16 +794,21 @@ async def prepare_upload(
             "file_type": file_type,
             "expires_at": result["expires_at"],
             "warnings": result.get("warnings", []),
+            "message": f"Successfully prepared {file_type} for upload",
             **({
                 "dimensions": result["dimensions"]
             } if file_type == "thumbnail" and "dimensions" in result else {})
         }
         
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise  # Re-raise HTTP exceptions with our custom messages
     except Exception as e:
-        logger.error(f"Failed to prepare {file_type} upload: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        # Catch-all for unexpected errors
+        logger.error(f"Unexpected error in prepare_upload: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail="An unexpected error occurred. Please try again later."
+        )
 
 
 @router.post("/prepare-thumbnail")
@@ -742,28 +873,81 @@ async def get_upload_status(
     try:
         client = await db.client
         
+        logger.info(f"Fetching upload status for upload_id={upload_id}, user_id={user_id}")
+        
         # Get upload record
         result = await client.table("youtube_uploads").select("*").eq(
             "user_id", user_id
         ).eq("id", upload_id).execute()
         
         if not result.data:
-            raise HTTPException(status_code=404, detail="Upload not found")
+            logger.warning(f"No upload found with id={upload_id} for user={user_id}")
+            
+            # Check if this might be a reference_id instead
+            ref_result = await client.table("upload_references").select("*").eq(
+                "user_id", user_id
+            ).eq("reference_id", upload_id).execute()
+            
+            if ref_result.data:
+                logger.info(f"Found reference_id={upload_id}, but no youtube_upload record yet")
+                # Return a pending status for references that haven't been uploaded yet
+                ref_data = ref_result.data[0]
+                return {
+                    "success": True,
+                    "upload_id": upload_id,
+                    "status": "pending",
+                    "progress": 0,
+                    "message": "Upload is being prepared",
+                    "video": {
+                        "title": "Preparing upload",
+                        "file_name": ref_data.get("file_name", ""),
+                        "file_size": ref_data.get("file_size", 0),
+                        "status": "pending",
+                        "progress": 0
+                    },
+                    "channel": {}
+                }
+            
+            raise HTTPException(status_code=404, detail=f"Upload not found with id: {upload_id}")
         
         upload = result.data[0]
         
-        # Prepare response
+        # Get channel information
+        channel_info = {}
+        if upload.get("channel_id"):
+            try:
+                channel_result = await client.table("youtube_channels").select("*").eq(
+                    "user_id", user_id
+                ).eq("id", upload["channel_id"]).execute()
+                
+                if channel_result.data:
+                    channel = channel_result.data[0]
+                    channel_info = {
+                        "id": channel["id"],
+                        "name": channel["name"],
+                        "profile_picture": channel.get("profile_picture"),
+                        "subscriber_count": channel.get("subscriber_count")
+                    }
+            except Exception as e:
+                logger.warning(f"Failed to fetch channel info: {e}")
+        
+        # Prepare response with enhanced progress tracking
         response = {
             "success": True,
             "upload_id": upload["id"],
             "status": upload["upload_status"],
             "progress": upload.get("upload_progress", 0),
+            "bytes_uploaded": upload.get("bytes_uploaded", 0) if "bytes_uploaded" in upload else 0,
+            "total_bytes": upload.get("total_bytes", 0) if "total_bytes" in upload else upload.get("file_size", 0),
+            "channel": channel_info,
             "video": {
                 "title": upload["title"],
                 "file_name": upload["file_name"],
                 "file_size": upload["file_size"],
                 "status": upload["upload_status"],
                 "progress": upload.get("upload_progress", 0),
+                "bytes_uploaded": upload.get("bytes_uploaded", 0) if "bytes_uploaded" in upload else 0,
+                "total_bytes": upload.get("total_bytes", 0) if "total_bytes" in upload else upload.get("file_size", 0),
                 "video_id": upload.get("video_id")
             }
         }
@@ -791,8 +975,8 @@ async def get_upload_status(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Failed to get upload status: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Failed to get upload status for upload_id={upload_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 
 @router.get("/pending-uploads")
@@ -1072,3 +1256,113 @@ async def update_video_thumbnail(
     except Exception as e:
         logger.error(f"Failed to update thumbnail: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/universal-upload")
+async def universal_upload(
+    upload_data: Dict[str, Any],
+    user_id: str = Depends(get_current_user_id_from_jwt)
+) -> Dict[str, Any]:
+    """Universal upload endpoint for any social media platform"""
+    try:
+        platform = upload_data.get("platform", "").lower()
+        
+        if platform == "youtube":
+            # Delegate to YouTube upload
+            from .upload import YouTubeUploadService
+            youtube_service = YouTubeUploadService(db)
+            
+            # Convert universal params to YouTube format
+            youtube_params = {
+                "channel_id": upload_data["account_id"],
+                "title": upload_data["title"],
+                "description": upload_data.get("description", ""),
+                "tags": upload_data.get("tags", []),
+                "category_id": upload_data.get("category_id", "22"),
+                "privacy_status": upload_data.get("privacy_status", "public"),
+                "made_for_kids": upload_data.get("platform_settings", {}).get("made_for_kids", False),
+                "video_reference_id": upload_data.get("video_reference_id"),
+                "thumbnail_reference_id": upload_data.get("thumbnail_reference_id"),
+                "scheduled_for": upload_data.get("scheduled_for"),
+                "notify_subscribers": upload_data.get("notify_followers", True),
+                "auto_discover": upload_data.get("auto_discover", True)
+            }
+            
+            # Start YouTube upload
+            result = await youtube_service.upload_video(user_id, youtube_params)
+            
+            return {
+                "success": True,
+                "upload_id": result.get("upload_id"),
+                "platform": "youtube",
+                "status": "uploading",
+                "message": "YouTube upload started",
+                "upload_started": True,
+                "account": {
+                    "id": upload_data["account_id"],
+                    "name": upload_data.get("account_name", "YouTube Channel")
+                }
+            }
+        else:
+            raise HTTPException(
+                status_code=501, 
+                detail=f"Platform '{platform}' not yet supported. Currently supporting: youtube"
+            )
+            
+    except Exception as e:
+        logger.error(f"Universal upload failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ===== UNIFIED SOCIAL ACCOUNTS ENDPOINTS =====
+
+@router.get("/agents/{agent_id}/social-accounts/youtube/enabled")
+async def get_agent_enabled_youtube_accounts(
+    agent_id: str,
+    user_id: str = Depends(get_current_user_id_from_jwt)
+) -> Dict[str, Any]:
+    """Get ONLY enabled YouTube accounts for an agent - UNIFIED SYSTEM ENDPOINT"""
+    try:
+        client = await db.client
+        
+        # Query unified social accounts table directly - SINGLE SOURCE OF TRUTH
+        result = await client.table("agent_social_accounts").select("*").eq(
+            "agent_id", agent_id
+        ).eq("user_id", user_id).eq(
+            "platform", "youtube"
+        ).eq("enabled", True).order("account_name", desc=False).execute()
+        
+        enabled_accounts = []
+        for account in result.data:
+            enabled_accounts.append({
+                "id": account["account_id"],
+                "name": account["account_name"],
+                "username": account["username"],
+                "profile_picture": account["profile_picture"],
+                "subscriber_count": account["subscriber_count"],
+                "view_count": account["view_count"],
+                "video_count": account["video_count"],
+                "country": account["country"]
+            })
+        
+        logger.info(f"🎯 Unified System: Agent {agent_id} has {len(enabled_accounts)} enabled YouTube accounts")
+        for acc in enabled_accounts:
+            logger.info(f"  ✅ Enabled: {acc['name']} ({acc['id']})")
+        
+        return {
+            "success": True,
+            "agent_id": agent_id,
+            "channels": enabled_accounts,  # Use 'channels' for tool compatibility
+            "count": len(enabled_accounts)
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Failed to get enabled YouTube accounts from unified system: {e}")
+        return {
+            "success": False,
+            "error": str(e),
+            "agent_id": agent_id,
+            "channels": [],
+            "count": 0
+        }
+

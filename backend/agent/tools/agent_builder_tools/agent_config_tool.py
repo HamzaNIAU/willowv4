@@ -296,7 +296,7 @@ class AgentConfigTool(AgentBuilderBaseTool):
                     logger.warning(f"Failed to get version data for agent config tool: {e}")
 
             from agent.config_helper import extract_agent_config
-            agent_config = extract_agent_config(agent_data, version_data)
+            agent_config = await extract_agent_config(agent_data, version_data)
             
             config_summary = {
                 "agent_id": agent_config["agent_id"],

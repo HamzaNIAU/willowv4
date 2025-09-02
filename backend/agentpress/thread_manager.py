@@ -157,8 +157,8 @@ class ThreadManager:
             'metadata': metadata or {},
         }
         
-        # Add agent information if provided
-        if agent_id:
+        # Add agent information if provided (but not for suna-default virtual agent)
+        if agent_id and agent_id != 'suna-default':
             data_to_insert['agent_id'] = agent_id
         if agent_version_id:
             data_to_insert['agent_version_id'] = agent_version_id

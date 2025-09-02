@@ -1,0 +1,2577 @@
+"""YouTube Tool for Agent Integration - Sandbox Version"""
+
+from typing import Dict, Any, Optional, List
+from sandbox.tool_base import SandboxToolsBase
+from agentpress.tool import ToolResult, openapi_schema
+from agentpress.thread_manager import ThreadManager
+from daytona_sdk import SessionExecuteRequest
+import asyncio
+import json
+import os
+import re
+from datetime import datetime, timedelta, timezone
+import time
+from utils.logger import logger
+
+
+class YouTubeTool(SandboxToolsBase):
+    """YouTube integration tool for the agent - runs in Daytona sandbox"""
+    
+    def __init__(self, project_id: str, thread_manager: ThreadManager, user_id: str, channel_ids: Optional[List[str]] = None, channel_metadata: Optional[List[Dict[str, Any]]] = None, jwt_token: Optional[str] = None, agent_id: Optional[str] = None, thread_id: Optional[str] = None):
+        super().__init__(project_id, thread_manager)
+        self.user_id = user_id
+        self.channel_ids = channel_ids or []
+        self.agent_id = agent_id
+        self.thread_id = thread_id
+        self.jwt_token = jwt_token
+        # Use BACKEND_URL environment variable which is correctly set in Docker
+        backend_url = os.getenv("BACKEND_URL", "http://localhost:8000")
+        self.base_url = backend_url + "/api"
+        
+        # Store metadata for sandbox operations
+        self.channel_metadata = {ch['id']: ch for ch in channel_metadata} if channel_metadata else {}
+        self._has_channels = len(self.channel_ids) > 0
+        
+        # Log initialization details
+        logger.info(f"[YouTube Sandbox Tool] Initialized for user {user_id}, agent {agent_id}")
+        logger.info(f"[YouTube Sandbox Tool] Channel metadata: {len(self.channel_metadata)} channels")
+        logger.info(f"[YouTube Sandbox Tool] Base URL: {self.base_url}")
+    
+    async def _setup_sandbox_environment(self):
+        """Set up the sandbox environment with YouTube scripts and dependencies"""
+        await self._ensure_sandbox()
+        
+        # Create YouTube scripts directory
+        await self._execute_sandbox_command("mkdir -p /workspace/youtube_scripts")
+        
+        # Install required Python packages in sandbox
+        install_cmd = "cd /workspace && pip install google-api-python-client google-auth google-auth-httplib2 google-auth-oauthlib requests"
+        await self._execute_sandbox_command(install_cmd)
+        
+        # Set up environment variables for backend communication
+        env_setup = f"""
+export BACKEND_URL="{self.base_url.replace('/api', '')}"
+export USER_ID="{self.user_id}"
+export AGENT_ID="{self.agent_id}"
+export JWT_TOKEN="{self.jwt_token}"
+"""
+        await self._execute_sandbox_command(f"echo '{env_setup}' > /workspace/.youtube_env")
+        
+        logger.info("[YouTube Sandbox Tool] Environment setup completed")
+    
+    async def _execute_sandbox_command(self, command: str, timeout: int = 30) -> Dict[str, Any]:
+        """Execute a command in the sandbox and return structured results"""
+        session_id = f"youtube-{int(time.time())}"
+        
+        try:
+            await self.sandbox.process.create_session(session_id)
+            
+            req = SessionExecuteRequest(
+                command=f"source /workspace/.youtube_env && {command}",
+                var_async=False,
+                cwd="/workspace"
+            )
+            
+            response = await self.sandbox.process.execute_session_command(
+                session_id=session_id,
+                req=req,
+                timeout=timeout
+            )
+            
+            logs = await self.sandbox.process.get_session_command_logs(
+                session_id=session_id,
+                command_id=response.cmd_id
+            )
+            
+            return {
+                "success": response.exit_code == 0,
+                "output": logs,
+                "exit_code": response.exit_code,
+                "command": command
+            }
+            
+        except Exception as e:
+            logger.error(f"[YouTube Sandbox Tool] Command execution failed: {e}")
+            return {
+                "success": False,
+                "output": str(e),
+                "exit_code": -1,
+                "command": command
+            }
+    
+    async def _check_recent_upload_success(self) -> Optional[Dict[str, Any]]:
+        """
+        Check for recent successful uploads that the agent might have missed due to disconnection.
+        Returns upload info if found, None otherwise.
+        """
+        try:
+            if not self.db or not self.user_id:
+                return None
+            
+            client = await self.db.client
+            
+            # Look for successful uploads in the last 5 minutes
+            from datetime import datetime, timedelta, timezone
+            five_minutes_ago = datetime.now(timezone.utc) - timedelta(minutes=5)
+            
+            result = await client.table("youtube_uploads").select("*").eq(
+                "user_id", self.user_id
+            ).eq(
+                "upload_status", "completed"
+            ).gte(
+                "updated_at", five_minutes_ago.isoformat()
+            ).order("updated_at", desc=True).limit(1).execute()
+            
+            if result.data:
+                upload_info = result.data[0]
+                logger.info(f"[YouTube Tool] Found recent successful upload: {upload_info.get('title')} (video_id: {upload_info.get('youtube_video_id')})")
+                return upload_info
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"[YouTube Tool] Error checking recent upload success: {e}")
+            return None
+    
+    def _create_jwt_token(self) -> str:
+        """Create a JWT token for API authentication"""
+        jwt_secret = os.getenv("SUPABASE_JWT_SECRET")
+        if not jwt_secret:
+            logger.warning("SUPABASE_JWT_SECRET not set, authentication may fail")
+            return ""
+        
+        # Create a simple JWT with the user_id
+        payload = {
+            "sub": self.user_id,
+            "user_id": self.user_id,
+            "role": "authenticated"
+        }
+        
+        return jwt.encode(payload, jwt_secret, algorithm="HS256")
+    
+    def _get_cache(self, key: str, ignore_expiry: bool = False) -> Optional[Any]:
+        """Get cached value if still valid
+        
+        Args:
+            key: Cache key
+            ignore_expiry: If True, return cached value even if expired
+        """
+        if key not in self._cache:
+            return None
+        
+        # Check if cache expired (unless we're ignoring expiry)
+        if not ignore_expiry:
+            timestamp = self._cache_timestamps.get(key, 0)
+            if time.time() - timestamp > self._cache_ttl:
+                # Cache expired, remove it
+                del self._cache[key]
+                del self._cache_timestamps[key]
+                logger.debug(f"Cache expired for key: {key}")
+                return None
+        
+        logger.debug(f"Cache hit for key: {key} (ignore_expiry={ignore_expiry})")
+        return self._cache[key]
+    
+    def _set_cache(self, key: str, value: Any, ttl: Optional[int] = None) -> None:
+        """Set cache value with optional custom TTL"""
+        self._cache[key] = value
+        self._cache_timestamps[key] = time.time()
+        if ttl:
+            # Store custom TTL for this key (not implemented in basic version)
+            pass
+        logger.debug(f"Cache set for key: {key}")
+    
+    def _clear_cache(self, pattern: Optional[str] = None) -> None:
+        """Clear cache entries matching pattern or all if no pattern"""
+        if pattern:
+            keys_to_delete = [k for k in self._cache.keys() if pattern in k]
+            for key in keys_to_delete:
+                del self._cache[key]
+                del self._cache_timestamps[key]
+            logger.debug(f"Cleared {len(keys_to_delete)} cache entries matching '{pattern}'")
+        else:
+            self._cache.clear()
+            self._cache_timestamps.clear()
+            logger.debug("Cleared all cache entries")
+    
+    def _should_auto_discover_files(self, context: Optional[str], title: Optional[str], description: Optional[str]) -> bool:
+        """
+        Always returns True - auto-discovery should always be enabled for convenience
+        The backend service will handle finding files intelligently
+        """
+        logger.debug("[YouTube Tool] Auto-discovery is always enabled for seamless uploads")
+        return True
+    
+    async def _check_enabled(self, channel_id: Optional[str] = None) -> tuple[bool, str]:
+        """
+        Check if YouTube tool is enabled for the current agent and channel
+        Returns (is_enabled, message)
+        """
+        logger.info(f"[YouTube Tool] _check_enabled called - agent_id: {self.agent_id}, user_id: {self.user_id}, channel_id: {channel_id}")
+        logger.info(f"[YouTube Tool] self.channel_ids: {self.channel_ids}, has_toggle_service: {bool(self.toggle_service)}")
+        
+        if not self.agent_id or not self.toggle_service:
+            # If no agent ID or toggle service, assume enabled
+            logger.info(f"[YouTube Tool] No agent_id or toggle_service, assuming enabled")
+            return True, ""
+        
+        try:
+            # Check if specific channel is enabled
+            if channel_id:
+                mcp_id = f"social.youtube.{channel_id}"
+                is_enabled = await self.toggle_service.is_enabled(
+                    self.agent_id, 
+                    self.user_id, 
+                    mcp_id
+                )
+                if not is_enabled:
+                    return False, f"YouTube channel {channel_id} is disabled. Please enable it in the MCP connections dropdown."
+            
+            # Always fetch live enabled channels instead of relying on cached data
+            live_enabled_channels = await self._get_enabled_channels(force_refresh=True)
+            
+            logger.info(f"[YouTube Tool] Live channel check returned: {len(live_enabled_channels)} channels")
+            for ch in live_enabled_channels:
+                logger.info(f"[YouTube Tool] Live enabled channel: {ch.get('name')} ({ch.get('id')})")
+            
+            if not live_enabled_channels:
+                # SMART RETRY: Try one more time with fresh cache to handle sync delays
+                logger.warning(f"[YouTube Tool] First check found no channels, retrying with fresh cache...")
+                
+                # Clear any local cache and retry
+                self._clear_cache("channels")
+                await asyncio.sleep(0.1)  # Brief delay for sync
+                
+                retry_channels = await self._get_enabled_channels(force_refresh=True)
+                logger.info(f"[YouTube Tool] Retry check returned: {len(retry_channels)} channels")
+                
+                if not retry_channels:
+                    # FINAL CHECK: Look for recent successful uploads before declaring failure
+                    recent_success = await self._check_recent_upload_success()
+                    if recent_success:
+                        logger.info(f"[YouTube Tool] ✅ Found recent successful upload despite channel check failure")
+                        return True, ""
+                    
+                    logger.error(f"[YouTube Tool] Still no enabled channels after retry, returning error")
+                    return False, "No YouTube channels are enabled. Please enable at least one channel in the MCP connections dropdown."
+                else:
+                    logger.info(f"[YouTube Tool] ✅ Retry successful - found {len(retry_channels)} channels!")
+                    return True, ""
+            
+            logger.info(f"[YouTube Tool] Live validation passed - {len(live_enabled_channels)} channels enabled")
+            return True, ""
+            
+        except Exception as e:
+            logger.error(f"Error checking YouTube tool enabled state: {e}")
+            # Default to enabled on error
+            return True, ""
+    
+    async def _pre_warm_channels(self) -> None:
+        """Pre-fetch channels on first use to ensure they're available"""
+        if self._channels_pre_warmed:
+            return
+        
+        try:
+            logger.info(f"[YouTube Tool] Pre-warming channel cache for user {self.user_id}")
+            channels = await self._get_enabled_channels(force_refresh=True)
+            if channels:
+                logger.info(f"[YouTube Tool] Pre-warmed cache with {len(channels)} channels")
+                self._channels_pre_warmed = True
+            else:
+                # Try direct API call as fallback
+                logger.warning("[YouTube Tool] No channels found during pre-warm, will retry on demand")
+        except Exception as e:
+            logger.error(f"[YouTube Tool] Failed to pre-warm channel cache: {e}")
+    
+    async def _get_enabled_channels(self, force_refresh: bool = False) -> List[Dict[str, Any]]:
+        """
+        Get YouTube channels using real-time data from cache service.
+        This ensures we always have the latest toggle state.
+        """
+        try:
+            # Always fetch fresh data from cache service to respect toggle changes
+            if self.db and self.agent_id:
+                from services.youtube_channel_cache import YouTubeChannelCacheService
+                cache_service = YouTubeChannelCacheService(self.db)
+                
+                logger.debug(f"[YouTube Tool] Fetching real-time enabled channels for agent {self.agent_id}")
+                enabled_channels = await cache_service.get_enabled_channels(self.user_id, self.agent_id)
+                
+                if enabled_channels:
+                    logger.info(f"[YouTube Tool] Found {len(enabled_channels)} enabled channels via cache service")
+                    # Update our internal metadata with fresh data
+                    self.channel_metadata = {ch['id']: ch for ch in enabled_channels}
+                    return enabled_channels
+                else:
+                    logger.info(f"[YouTube Tool] No enabled channels found via cache service for agent {self.agent_id}")
+                    return []
+            
+            # Fallback to pre-computed data if cache service unavailable
+            if self.channel_metadata:
+                channels = list(self.channel_metadata.values())
+                logger.debug(f"[YouTube Tool] Using pre-computed channels from agent config: {len(channels)} channels")
+                return channels
+            
+            # Final fallback for backward compatibility
+            if self.channel_ids:
+                channels = [{"id": ch_id, "name": f"Channel {ch_id[:8]}"} for ch_id in self.channel_ids]
+                logger.info(f"[YouTube Tool] Using fallback channel data for {len(channels)} channels")
+                return channels
+            
+            logger.info(f"[YouTube Tool] No YouTube channels available for this agent")
+            return []
+            
+        except Exception as e:
+            logger.error(f"[YouTube Tool] Error fetching enabled channels: {e}")
+            # Fallback to pre-computed data on error
+            if self.channel_metadata:
+                channels = list(self.channel_metadata.values())
+                logger.info(f"[YouTube Tool] Error fallback: using pre-computed channels: {len(channels)}")
+                return channels
+            return []
+    
+    async def _fetch_channel_metadata_for_ids(self, channel_ids: List[str]) -> List[Dict[str, Any]]:
+        """Helper method to fetch channel metadata for specific channel IDs"""
+        try:
+            async with aiohttp.ClientSession() as session:
+                headers = {
+                    "Authorization": f"Bearer {self.jwt_token}",
+                    "Content-Type": "application/json"
+                }
+                async with session.get(f"{self.base_url}/youtube/channels", headers=headers) as response:
+                    if response.status != 200:
+                        return []
+                    
+                    data = await response.json()
+                    all_channels = data.get("channels", [])
+                    return [ch for ch in all_channels if ch["id"] in channel_ids]
+        except Exception as e:
+            logger.error(f"Error fetching channel metadata: {e}")
+            return []
+    
+    def _generate_video_metadata(self, context: str) -> Dict[str, Any]:
+        """
+        Generate intelligent title, description, and tags based on context
+        """
+        context_lower = context.lower()
+        current_year = datetime.now(timezone.utc).year
+        current_month = datetime.now(timezone.utc).strftime("%B")
+        
+        # Detect video type from context
+        video_type = "general"
+        if any(word in context_lower for word in ["teaser", "preview", "coming soon", "announcement"]):
+            video_type = "teaser"
+        elif any(word in context_lower for word in ["demo", "demonstration", "showcase", "walkthrough"]):
+            video_type = "demo"
+        elif any(word in context_lower for word in ["tutorial", "how to", "guide", "learn"]):
+            video_type = "tutorial"
+        elif any(word in context_lower for word in ["update", "release", "launch", "new version"]):
+            video_type = "update"
+        elif any(word in context_lower for word in ["review", "unboxing", "first look"]):
+            video_type = "review"
+        
+        # Extract app/product name if mentioned
+        app_name = "App"
+        name_patterns = [
+            r"for (?:the )?([A-Z][a-zA-Z]+)(?:\s+app)?",  # "for Willow app"
+            r"(?:the )?([A-Z][a-zA-Z]+)\s+app",           # "Willow app"
+            r"about\s+([A-Z][a-zA-Z]+)",                  # "about Willow"
+        ]
+        
+        for pattern in name_patterns:
+            match = re.search(pattern, context, re.IGNORECASE)
+            if match:
+                app_name = match.group(1).title()
+                break
+        
+        # Generate title based on video type
+        title_templates = {
+            "teaser": [
+                f"{app_name} - Coming Soon | Official Teaser {current_year}",
+                f"Introducing {app_name} | Something Amazing is Coming",
+                f"{app_name} App Reveal | Teaser Trailer {current_year}"
+            ],
+            "demo": [
+                f"{app_name} Demo | See It In Action",
+                f"{app_name} App Showcase | Full Walkthrough",
+                f"First Look at {app_name} | Live Demo"
+            ],
+            "tutorial": [
+                f"How to Use {app_name} | Complete Guide {current_year}",
+                f"{app_name} Tutorial | Getting Started",
+                f"Master {app_name} | Step-by-Step Tutorial"
+            ],
+            "update": [
+                f"{app_name} Update | What's New in {current_month} {current_year}",
+                f"Big Updates Coming to {app_name}",
+                f"{app_name} - New Features Announced"
+            ],
+            "review": [
+                f"{app_name} Review | Honest First Impressions",
+                f"Is {app_name} Worth It? | Full Review",
+                f"{app_name} - Everything You Need to Know"
+            ],
+            "general": [
+                f"{app_name} | {current_year}",
+                f"Check Out {app_name}",
+                f"{app_name} - Watch This!"
+            ]
+        }
+        
+        # Select appropriate title
+        title = title_templates.get(video_type, title_templates["general"])[0]
+        
+        # Generate description based on video type
+        description_templates = {
+            "teaser": f"""🚀 Something revolutionary is coming...
+
+Introducing {app_name} - The future is almost here.
+
+Get ready for an experience that will transform the way you work, play, and connect.
+
+⏰ Coming Soon
+🔔 Turn on notifications to be the first to know when we launch!
+
+📱 Stay Connected:
+→ Website: [Coming Soon]
+→ Twitter: @{app_name}App
+→ Instagram: @{app_name}App
+
+Join the waitlist and get exclusive early access!
+
+#{app_name} #ComingSoon #AppLaunch #Innovation #TechTeaser #{current_year} #NewApp #Startup #Technology""",
+            
+            "demo": f"""🎯 See {app_name} in action!
+
+In this demo, we showcase the powerful features and intuitive design that make {app_name} stand out.
+
+📋 What's Covered:
+• Main features walkthrough
+• User interface tour
+• Key functionalities
+• Real-world use cases
+
+🚀 Ready to try it yourself?
+→ Download: [Link]
+→ Free Trial: Available
+
+💬 Questions? Drop them in the comments!
+
+#{app_name} #AppDemo #TechDemo #Software #Productivity #{current_year} #AppShowcase""",
+            
+            "tutorial": f"""📚 Learn how to master {app_name}!
+
+This comprehensive guide will walk you through everything you need to know to get started with {app_name}.
+
+⏱️ Timestamps:
+0:00 Introduction
+0:30 Getting Started
+2:00 Main Features
+5:00 Pro Tips
+7:00 Conclusion
+
+📌 Helpful Resources:
+• Documentation: [Link]
+• Support: [Link]
+• Community: [Link]
+
+🎯 By the end of this video, you'll be a {app_name} pro!
+
+#{app_name} #Tutorial #HowTo #TechTutorial #Learning #{current_year} #Guide""",
+            
+            "update": f"""🎉 Exciting updates for {app_name}!
+
+We've been working hard to bring you amazing new features and improvements.
+
+✨ What's New:
+• Feature updates
+• Performance improvements
+• Bug fixes
+• UI enhancements
+
+📅 Available now for all users!
+
+📲 Update your app to experience these improvements.
+
+#{app_name} #AppUpdate #NewFeatures #TechNews #{current_year} #ProductUpdate""",
+            
+            "general": f"""Welcome to {app_name}!
+
+{context}
+
+🔗 Links:
+• Website: [Link]
+• Download: [Link]
+• Support: [Link]
+
+📱 Follow us for more updates!
+
+#{app_name} #{current_year} #Technology #App #Software"""
+        }
+        
+        description = description_templates.get(video_type, description_templates["general"])
+        
+        # Generate comprehensive SEO-optimized tags
+        base_tags = [app_name, str(current_year), "Technology", "Software", "App", "Tech"]
+        
+        # Add current month for freshness
+        month_tags = [current_month + " " + str(current_year), str(current_year) + " Latest"]
+        
+        type_specific_tags = {
+            "teaser": ["Coming Soon", "Teaser", "Preview", "Launch", "Announcement", "Startup", "Sneak Peek", "First Look"],
+            "demo": ["Demo", "Showcase", "Walkthrough", "Features", "Tutorial", "Live Demo", "App Demo"],
+            "tutorial": ["Tutorial", "How To", "Guide", "Learning", "Education", "Tips", "Step by Step", "Learn"],
+            "update": ["Update", "New Features", "Release", "Changelog", "Improvements", "What's New", "Latest Update"],
+            "review": ["Review", "First Look", "Impressions", "Analysis", "Opinion", "Honest Review", "Full Review"],
+            "general": ["Video", "Content", "Tech", "Digital", "Innovation", "New Tech"]
+        }
+        
+        tags = base_tags + month_tags + type_specific_tags.get(video_type, type_specific_tags["general"])
+        
+        # Add trending/viral tags for better reach
+        trending_tags = ["Trending", "Must See", "Viral", "2024 Tech", "Latest Technology"]
+        tags.extend(trending_tags[:2])  # Add 2 trending tags
+        
+        # Add any specific tags from context
+        if "ai" in context_lower or "artificial intelligence" in context_lower:
+            tags.extend(["AI", "Artificial Intelligence", "Machine Learning", "AI Technology", "Future Tech"])
+        if "mobile" in context_lower or "ios" in context_lower or "android" in context_lower:
+            tags.extend(["Mobile App", "iOS", "Android", "Mobile Technology", "App Development"])
+        if "web" in context_lower:
+            tags.extend(["Web App", "Browser", "Online", "Web Development", "SaaS"])
+        
+        # Add platform-specific tags
+        platform_tags = ["YouTube", "YouTube Video", "Tech YouTube", "Subscribe"]
+        tags.extend(platform_tags[:2])
+        
+        # Ensure uniqueness and limit to 15 tags (YouTube max)
+        unique_tags = []
+        seen = set()
+        for tag in tags:
+            if tag.lower() not in seen and len(unique_tags) < 15:
+                unique_tags.append(tag)
+                seen.add(tag.lower())
+        
+        return {
+            "title": title,
+            "description": description,
+            "tags": unique_tags,  # Already limited to 15 unique tags
+            "video_type": video_type,
+            "app_name": app_name,
+            "seo_optimized": True,
+            "tag_count": len(unique_tags)
+        }
+    
+    def _extract_reference_id_from_text(self, text: str) -> Optional[str]:
+        """Extract reference ID from text using pattern matching"""
+        if not text:
+            return None
+        
+        # Pattern 1: [File Reference: xxxx] or (File Reference: xxxx)
+        pattern1 = r"[\[\(]File Reference:\s*([a-f0-9]{32})[\]\)]"
+        match = re.search(pattern1, text, re.IGNORECASE)
+        if match:
+            return match.group(1)
+        
+        # Pattern 2: Reference ID xxxx or Ref ID: xxxx
+        pattern2 = r"(?:Reference ID|Ref ID):\s*([a-f0-9]{32})"
+        match = re.search(pattern2, text, re.IGNORECASE)
+        if match:
+            return match.group(1)
+        
+        # Pattern 3: Metadata_prompt_name_[name]_[timestamp].mp4 followed by reference
+        pattern3 = r"Metadata_prompt_name_\w+_\w+\.mp4[^\w]*([a-f0-9]{32})"
+        match = re.search(pattern3, text, re.IGNORECASE)
+        if match:
+            return match.group(1)
+        
+        # Pattern 4: Standalone 32-character hex string (reference ID format)
+        pattern4 = r"\b([a-f0-9]{32})\b"
+        match = re.search(pattern4, text)
+        if match:
+            return match.group(1)
+        
+        return None
+    
+    @openapi_schema({
+        "type": "function",
+        "function": {
+            "name": "youtube_check_upload_status",
+            "description": "Check for recent upload status and recover success state if agent was disconnected during upload. Call this if upload seemed to fail but you suspect it might have worked.",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+        }
+    })
+    async def youtube_check_upload_status(self) -> ToolResult:
+        """Check for recent successful uploads that the agent might have missed"""
+        try:
+            logger.info(f"[YouTube Tool] Checking for recent upload status...")
+            
+            recent_upload = await self._check_recent_upload_success()
+            
+            if recent_upload:
+                video_id = recent_upload.get('youtube_video_id')
+                title = recent_upload.get('title')
+                channel_id = recent_upload.get('channel_id')
+                
+                # Get channel name
+                channel_name = "YouTube Channel"  
+                if self.channel_metadata and channel_id in self.channel_metadata:
+                    channel_name = self.channel_metadata[channel_id]['name']
+                
+                video_url = f"https://www.youtube.com/watch?v={video_id}"
+                
+                return self.success_response({
+                    "message": f"✅ **Upload Recovery Successful!**\n\n🎬 **'{title}'** was uploaded successfully!\n\n📺 **Channel**: {channel_name}\n🔗 **YouTube URL**: {video_url}\n\n**The upload worked despite the connection issue!**",
+                    "video_id": video_id,
+                    "video_url": video_url,
+                    "title": title,
+                    "channel_name": channel_name,
+                    "upload_recovered": True,
+                    "status": "completed"
+                })
+            else:
+                return self.success_response({
+                    "message": "No recent successful uploads found in the last 5 minutes.",
+                    "upload_recovered": False
+                })
+                
+        except Exception as e:
+            logger.error(f"[YouTube Tool] Error checking upload status: {e}")
+            return self.fail_response(f"Failed to check upload status: {str(e)}")
+
+    @openapi_schema({
+        "type": "function",
+        "function": {
+            "name": "youtube_authenticate",
+            "description": "INSTANT ACTION - NO QUESTIONS! Shows OAuth button immediately. User clicks and connects. Never ask which account/channel/preferences - OAuth handles everything automatically!",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "check_existing": {
+                        "type": "boolean",
+                        "description": "Check if channels are already connected before showing auth (default: true)"
+                    }
+                },
+                "required": []
+            }
+        }
+    })
+    async def youtube_authenticate(self, check_existing: bool = True) -> ToolResult:
+        """Start YouTube OAuth authentication flow - works from both agent chat and Social Media page"""
+        try:
+            # First check if there are already connected channels if requested
+            if check_existing:
+                channels_result = await self.youtube_channels()
+                if channels_result.success:
+                    # Parse the output - it might be a JSON string or dictionary
+                    if isinstance(channels_result.output, str):
+                        try:
+                            output_data = json.loads(channels_result.output)
+                        except json.JSONDecodeError:
+                            logger.error(f"Failed to parse channels result: {channels_result.output}")
+                            output_data = {}
+                    else:
+                        output_data = channels_result.output
+                    
+                    channels = output_data.get("channels", []) if isinstance(output_data, dict) else []
+                    if channels:
+                        # Already have channels connected
+                        message = f"🎉 You already have {len(channels)} YouTube channel(s) connected:\n\n"
+                        for ch in channels:
+                            message += f"• **{ch['name']}**"
+                            if ch.get('username'):
+                                message += f" (@{ch['username']})"
+                            message += f" - {ch.get('subscriber_count', 0):,} subscribers\n"
+                        
+                        message += "\n💡 **Tips:**\n"
+                        message += "• To add more channels, click the button below or visit the Social Media page\n"
+                        message += "• You can manage channel permissions in the MCP connections dropdown\n"
+                        message += "• Each channel can be toggled on/off independently for this agent"
+                        
+                        # Still provide auth URL to add more channels
+                        # Include thread context if available
+                        request_data = {}
+                        if self.thread_id:
+                            request_data['thread_id'] = self.thread_id
+                        if self.project_id:
+                            request_data['project_id'] = self.project_id
+                        
+                        async with aiohttp.ClientSession() as session:
+                            headers = {
+                                "Authorization": f"Bearer {self.jwt_token}",
+                                "Content-Type": "application/json"
+                            }
+                            async with session.post(f"{self.base_url}/youtube/auth/initiate", headers=headers, json=request_data) as response:
+                                if response.status == 200:
+                                    data = await response.json()
+                                    auth_url = data.get("auth_url")
+                                    
+                                    return self.success_response({
+                                        "message": message,
+                                        "auth_url": auth_url,
+                                        "button_text": "Add Another Channel",
+                                        "existing_channels": channels
+                                    })
+                        
+                        # If we couldn't get auth URL, still show existing channels
+                        return self.success_response({
+                            "message": message,
+                            "existing_channels": channels
+                        })
+            
+            # Get auth URL from backend (same endpoint used by Social Media page)
+            # Include thread context if available
+            request_data = {}
+            if self.thread_id:
+                request_data['thread_id'] = self.thread_id
+            if self.project_id:
+                request_data['project_id'] = self.project_id
+            
+            async with aiohttp.ClientSession() as session:
+                headers = {
+                    "Authorization": f"Bearer {self.jwt_token}",
+                    "Content-Type": "application/json"
+                }
+                async with session.post(f"{self.base_url}/youtube/auth/initiate", headers=headers, json=request_data) as response:
+                    if response.status != 200:
+                        error_text = await response.text()
+                        return self.fail_response(f"Failed to initiate authentication: {error_text}")
+                    
+                    data = await response.json()
+                    auth_url = data.get("auth_url")
+                    
+                    if not auth_url:
+                        return self.fail_response("No authentication URL received")
+                    
+                    # Return OAuth button for user to click
+                    message = "🔗 **Connect Your YouTube Channel**\n\n"
+                    message += "Click the button below to connect your YouTube account. "
+                    message += "You can also manage your social media connections from the Social Media page in the dashboard.\n\n"
+                    message += "**After connecting:**\n"
+                    message += "• Your channel will appear in the MCP connections dropdown\n"
+                    message += "• You can toggle it on/off for this agent\n"
+                    message += "• Upload videos, manage content, and view analytics"
+                    
+                    return self.success_response({
+                        "message": message,
+                        "auth_url": auth_url,
+                        "button_text": "Connect YouTube Channel"
+                    })
+        except Exception as e:
+            logger.error(f"YouTube authentication error: {e}")
+            return ToolResult(success=False, output=str(e))
+    
+    @openapi_schema({
+        "type": "function",
+        "function": {
+            "name": "youtube_channels",
+            "description": "INSTANT ACTION - NO QUESTIONS! Shows all connected channels with stats immediately. Never ask what to show or which channel - just display everything. If no channels, shows connect button automatically.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "channel_id": {
+                        "type": "string",
+                        "description": "Optional: Get detailed analytics for a specific channel. If not provided, returns all enabled channels."
+                    },
+                    "include_analytics": {
+                        "type": "boolean",
+                        "description": "Include detailed analytics like average views per video, country, creation date (default: false for list, true for single channel)"
+                    }
+                },
+                "required": []
+            }
+        }
+    })
+    async def youtube_channels(self, channel_id: Optional[str] = None, include_analytics: Optional[bool] = None) -> ToolResult:
+        """Get user's connected YouTube channels with comprehensive statistics - filtered by MCP toggle status"""
+        # Check if tool is enabled (and specific channel if provided)
+        is_enabled, message = await self._check_enabled(channel_id)
+        if not is_enabled:
+            return self.fail_response(message)
+        
+        try:
+            # If specific channel requested, get detailed stats
+            if channel_id:
+                # Default to include analytics for single channel view
+                if include_analytics is None:
+                    include_analytics = True
+                
+                # Check cache for detailed channel info
+                cache_key = f"channel_detail_{channel_id}"
+                channel = self._get_cache(cache_key)
+                
+                if channel is None:
+                    # Fetch from API if not cached
+                    async with aiohttp.ClientSession() as session:
+                        headers = {
+                            "Authorization": f"Bearer {self.jwt_token}",
+                            "Content-Type": "application/json"
+                        }
+                        async with session.get(f"{self.base_url}/youtube/channels/{channel_id}", headers=headers) as response:
+                            if response.status == 404:
+                                return self.fail_response(
+                                    f"Channel {channel_id} not found. Use youtube_channels() without parameters to see available channels."
+                                )
+                            elif response.status != 200:
+                                error_text = await response.text()
+                                return self.fail_response(f"Failed to get channel details: {error_text}")
+                            
+                            data = await response.json()
+                            channel = data.get("channel")
+                            
+                            # Cache the detailed channel info
+                            self._set_cache(cache_key, channel)
+                        
+                        # Update metadata
+                        self.channel_metadata[channel_id] = channel
+                        
+                        # Build detailed response
+                        stats_message = f"📊 **Channel Analytics: {channel['name']}**\n\n"
+                        
+                        if channel.get('username'):
+                            stats_message += f"**Username:** @{channel['username']}\n"
+                        
+                        stats_message += f"**Channel ID:** {channel['id']}\n\n"
+                        stats_message += "**📈 Core Metrics:**\n"
+                        stats_message += f"• **Subscribers:** {channel.get('subscriber_count', 0):,}\n"
+                        stats_message += f"• **Total Views:** {channel.get('view_count', 0):,}\n"
+                        stats_message += f"• **Videos Published:** {channel.get('video_count', 0):,}\n"
+                        
+                        # Include analytics if requested
+                        if include_analytics:
+                            if channel.get('view_count', 0) > 0 and channel.get('video_count', 0) > 0:
+                                avg_views = channel['view_count'] / channel['video_count']
+                                stats_message += f"• **Average Views per Video:** {avg_views:,.0f}\n"
+                            
+                            if channel.get('description'):
+                                stats_message += f"\n**📝 Channel Description:**\n{channel['description'][:200]}...\n"
+                            
+                            if channel.get('country'):
+                                stats_message += f"\n**🌍 Country:** {channel['country']}\n"
+                            
+                            if channel.get('published_at'):
+                                stats_message += f"**📅 Channel Created:** {channel['published_at'][:10]}\n"
+                        
+                        response_data = {
+                            "channel": channel,
+                            "message": stats_message,
+                            "analytics_summary": {
+                                "name": channel['name'],
+                                "subscribers": channel.get('subscriber_count', 0),
+                                "total_views": channel.get('view_count', 0),
+                                "videos": channel.get('video_count', 0)
+                            }
+                        }
+                        
+                        if include_analytics:
+                            response_data["analytics_summary"]["average_views_per_video"] = (
+                                channel['view_count'] / channel['video_count'] 
+                                if channel.get('video_count', 0) > 0 else 0
+                            )
+                            response_data["analytics_summary"]["country"] = channel.get('country')
+                            response_data["analytics_summary"]["created_at"] = channel.get('published_at')
+                        
+                        return self.success_response(response_data)
+            
+            # Otherwise, get list of all enabled channels - always fetch fresh to get current toggle state
+            channels = await self._get_enabled_channels(force_refresh=True)
+            
+            # Update our internal metadata with only enabled channels
+            self.channel_metadata = {ch['id']: ch for ch in channels}
+            self.channel_ids = [ch['id'] for ch in channels]
+            self._has_channels = len(channels) > 0
+            
+            if not channels:
+                logger.info(f"[YouTube Tool] No enabled channels found for user {self.user_id}, agent {self.agent_id}")
+                
+                # Check if user has any channels at all
+                all_channels_check = self._get_cache(f"all_channels_{self.user_id}")
+                logger.debug(f"[YouTube Tool] All channels cache check: {all_channels_check is not None}")
+                
+                if all_channels_check and len(all_channels_check) > 0:
+                    # User has channels but none are enabled
+                    logger.info(f"[YouTube Tool] User has {len(all_channels_check)} total channels but none enabled for agent {self.agent_id}")
+                    return self.success_response({
+                        "message": "⚠️ **YouTube channels need to be enabled**\n\nYou have YouTube channels connected, but they need to be enabled for this agent.\n\n**To enable channels:**\n1. Click the MCP connections button in the chat input (⚙️ icon next to send button)\n2. Toggle on the YouTube channels you want to use with this agent\n3. Try your request again\n\n**Note:** Social media channels require explicit enabling for security.",
+                        "channels": [],
+                        "has_channels": False,
+                        "action_needed": "enable_channels"
+                    })
+                else:
+                    # User has no channels connected at all
+                    logger.info(f"[YouTube Tool] User has no YouTube channels connected")
+                    return self.success_response({
+                        "message": "📺 **No YouTube channels connected**\n\nYou haven't connected any YouTube channels yet.\n\n**To connect a channel:**\n1. Use the `youtube_authenticate` command, or\n2. Go to Settings → Social Media in the dashboard\n\nOnce connected, you'll need to enable them for this agent using the MCP connections button (⚙️ icon).",
+                        "channels": [],
+                        "has_channels": False,
+                        "action_needed": "connect_channels"
+                    })
+            
+            # Format channel information with enhanced details
+            formatted_channels = []
+            
+            # Build appropriate message based on number of enabled channels
+            if len(channels) == 1:
+                summary_text = f"**Selected YouTube channel:**\n\n"
+            else:
+                summary_text = f"**{len(channels)} enabled YouTube channels:**\n\n"
+            
+            for channel in channels:
+                formatted_channel = {
+                    "id": channel["id"],
+                    "name": channel["name"],
+                    "username": channel.get("username"),
+                    "profile_picture": channel.get("profile_picture"),
+                    "subscriber_count": channel.get("subscriber_count", 0),
+                    "view_count": channel.get("view_count", 0),
+                    "video_count": channel.get("video_count", 0)
+                }
+                
+                # Add analytics if requested
+                if include_analytics:
+                    if channel.get('view_count', 0) > 0 and channel.get('video_count', 0) > 0:
+                        formatted_channel["average_views_per_video"] = channel['view_count'] / channel['video_count']
+                    formatted_channel["country"] = channel.get("country")
+                    formatted_channel["created_at"] = channel.get("published_at")
+                    formatted_channel["description"] = channel.get("description")
+                
+                formatted_channels.append(formatted_channel)
+                
+                # Build readable summary
+                summary_text += f"📺 **{channel['name']}**\n"
+                if channel.get("username"):
+                    summary_text += f"   @{channel['username']}\n"
+                summary_text += f"   • {channel.get('subscriber_count', 0):,} subscribers\n"
+                summary_text += f"   • {channel.get('view_count', 0):,} total views\n"
+                summary_text += f"   • {channel.get('video_count', 0):,} videos\n"
+                
+                if include_analytics:
+                    if channel.get('view_count', 0) > 0 and channel.get('video_count', 0) > 0:
+                        avg_views = channel['view_count'] / channel['video_count']
+                        summary_text += f"   • {avg_views:,.0f} avg views/video\n"
+                
+                summary_text += "\n"
+            
+            # Add single channel note
+            if len(channels) == 1:
+                summary_text += "✅ This channel will be used automatically for uploads.\n"
+            
+            return self.success_response({
+                "channels": formatted_channels,
+                "count": len(formatted_channels),
+                "message": summary_text,
+                "has_channels": True,
+                "single_channel": len(channels) == 1,
+                "selected_channel_id": channels[0]["id"] if len(channels) == 1 else None
+            })
+        except Exception as e:
+            logger.error(f"Error fetching YouTube channels: {e}")
+            return ToolResult(success=False, output=str(e))
+    
+    @openapi_schema({
+        "type": "function",
+        "function": {
+            "name": "youtube_upload_video",
+            "description": "INSTANT UPLOAD - NO QUESTIONS! Automatically uploads video with smart defaults: PUBLIC visibility, auto-generated SEO title/description, 3-15 optimized tags. Thumbnail optional (YouTube auto-generates). Files auto-discovered from reference system. Just call this and report success - NEVER ask for confirmations!",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "channel_id": {
+                        "type": "string",
+                        "description": "The YouTube channel ID to upload to. DO NOT specify unless user explicitly requests a specific channel. Leave empty to auto-select from enabled channels. Specifying a disabled channel will cause upload to fail."
+                    },
+                    "context": {
+                        "type": "string",
+                        "description": "Brief context about video (e.g., 'Willow app teaser'). Tool automatically generates optimal title/description/tags from this. NEVER ask user to provide these separately!"
+                    },
+                    "title": {
+                        "type": "string",
+                        "description": "AUTO-GENERATED - DO NOT ASK USER! Only set if user explicitly provides. Otherwise auto-generates SEO-optimized title."
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": "AUTO-GENERATED - DO NOT ASK USER! Only set if user explicitly provides. Otherwise creates comprehensive description with hashtags."
+                    },
+                    "tags": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "AUTO-GENERATED - DO NOT ASK USER! Always generates 3-15 SEO tags automatically. Never ask what tags to use."
+                    },
+                    "privacy": {
+                        "type": "string",
+                        "enum": ["private", "unlisted", "public"],
+                        "description": "ALWAYS 'public' unless user explicitly says 'private' or 'unlisted'. NEVER ASK - just use public!"
+                    },
+                    "video_reference_id": {
+                        "type": "string",
+                        "description": "Reference ID of uploaded video file (optional - auto-discovered from recent uploads)"
+                    },
+                    "thumbnail_reference_id": {
+                        "type": "string",
+                        "description": "OPTIONAL - NEVER ASK FOR THIS! YouTube auto-generates thumbnail if not provided. Only use if user explicitly provides thumbnail image."
+                    }
+                },
+                "required": []
+            }
+        }
+    })
+    async def youtube_upload_video(
+        self,
+        channel_id: Optional[str] = None,
+        context: Optional[str] = None,
+        title: Optional[str] = None,
+        description: Optional[str] = None,
+        tags: Optional[List[str]] = None,
+        privacy: str = "public",
+        video_reference_id: Optional[str] = None,
+        thumbnail_reference_id: Optional[str] = None
+    ) -> ToolResult:
+        """Upload a video to YouTube using sandbox execution for agent visibility"""
+        try:
+            logger.info(f"[YouTube Sandbox Upload] Starting upload - channel_id: {channel_id}, has context: {bool(context)}")
+            logger.info(f"[YouTube Sandbox Upload] User ID: {self.user_id}, Agent ID: {self.agent_id}")
+            
+            # Setup sandbox environment
+            await self._setup_sandbox_environment()
+            
+            # Channel validation using backend API from sandbox
+            if not channel_id:
+                # Get enabled channels via sandbox API call
+                check_command = (
+                    "python -c \"import requests, json, os; "
+                    f"r = requests.get('{self.base_url}/youtube/channels/enabled/{self.agent_id}', "
+                    "headers={'Authorization': f'Bearer {os.getenv(\\\"JWT_TOKEN\\\")}'}); "
+                    "print(json.dumps(r.json() if r.status_code == 200 else {'error': r.text}))\""
+                )
+                channel_check = await self._execute_sandbox_command(check_command)
+                
+                if not channel_check["success"]:
+                    return self.fail_response(f"Failed to check channels: {channel_check['output']}")
+                
+                try:
+                    channel_data = json.loads(channel_check["output"])
+                    if "error" in channel_data:
+                        return self.fail_response(f"No YouTube channels enabled: {channel_data['error']}")
+                    
+                    enabled_channels = channel_data.get("channels", [])
+                    if not enabled_channels:
+                        return self.fail_response("❌ **No YouTube channels enabled for this agent**")
+                    
+                    if len(enabled_channels) == 1:
+                        channel_id = enabled_channels[0]["id"]
+                        logger.info(f"[YouTube Sandbox Upload] Auto-selected channel: {channel_id}")
+                    else:
+                        # Return channel selection UI
+                        return self.success_response({
+                            "message": f"Multiple channels available. Please specify channel_id.",
+                            "channels": enabled_channels,
+                            "action_needed": "select_channel"
+                        })
+                except json.JSONDecodeError as e:
+                    return self.fail_response(f"Failed to parse channel data: {e}")
+            
+            # Generate metadata if not provided
+            if not title and context:
+                title = self._generate_title_from_context(context)
+            if not description and context:
+                description = self._generate_description_from_context(context)  
+            if not tags and context:
+                tags = self._generate_tags_from_context(context)
+            
+            # Smart fallbacks
+            if not title:
+                title = f"Amazing New Video - {datetime.now(timezone.utc).strftime('%B %d, %Y')}"
+            if not description:
+                description = f"🎬 New video uploaded on {datetime.now(timezone.utc).strftime('%B %d, %Y')}"
+            if not tags:
+                tags = ["Video", "YouTube", "New", "Content"]
+            
+            # Create upload script in sandbox (avoid backslashes in f-strings)
+            escaped_title = title.replace('"', '\\"')
+            escaped_description = description.replace('"', '\\"')
+            tags_json = json.dumps(tags)
+            
+            upload_script = f"""cd /workspace/youtube_scripts
+python upload.py --channel_id="{channel_id}" --title="{escaped_title}" --description="{escaped_description}" --tags='{tags_json}' --privacy="{privacy}" --video_ref_id="{video_reference_id or 'auto'}" """
+            
+            # Execute upload in sandbox - Agent can monitor this!
+            logger.info(f"[YouTube Sandbox Upload] Executing upload script in sandbox...")
+            result = await self._execute_sandbox_command(upload_script, timeout=300)
+            
+            # Parse result from sandbox execution
+            if result["success"]:
+                try:
+                    upload_result = json.loads(result["output"].strip().split('\n')[-1])  # Last line should be JSON
+                    
+                    if upload_result.get("success"):
+                        video_id = upload_result.get("video_id")
+                        video_url = upload_result.get("video_url")
+                        
+                        return self.success_response({
+                            "message": f"🎉 **Upload Successful!**\n\n🎬 **'{title}'** uploaded to YouTube!\n\n🔗 **Watch**: {video_url}",
+                            "video_id": video_id,
+                            "video_url": video_url,
+                            "title": title,
+                            "channel_id": channel_id,
+                            "status": "completed",
+                            "sandbox_executed": True
+                        })
+                    else:
+                        return self.fail_response(f"Upload failed: {upload_result.get('error', 'Unknown error')}")
+                        
+                except json.JSONDecodeError:
+                    # If JSON parsing fails, return raw output
+                    return self.success_response({
+                        "message": f"Upload completed with output: {result['output']}",
+                        "raw_output": result["output"],
+                        "sandbox_executed": True
+                    })
+            else:
+                return self.fail_response(f"Sandbox execution failed: {result['output']}")
+                
+        except Exception as e:
+            logger.error(f"[YouTube Sandbox Upload] Unexpected error: {e}", exc_info=True)
+            return self.fail_response(f"Upload failed: {str(e)}")
+    
+    def _generate_title_from_context(self, context: str) -> str:
+        """Generate SEO-optimized title from context"""
+        # Simple title generation - can be enhanced
+        return f"{context} - {datetime.now(timezone.utc).strftime('%B %Y')}"
+    
+    def _generate_description_from_context(self, context: str) -> str:
+        """Generate comprehensive description from context"""
+        return f"🎬 {context}\n\nUploaded on {datetime.now(timezone.utc).strftime('%B %d, %Y')}\n\n👍 Like if you enjoyed\n💬 Comment your thoughts\n🔔 Subscribe for more!"
+    
+    def _generate_tags_from_context(self, context: str) -> List[str]:
+        """Generate relevant tags from context"""
+        base_tags = ["Video", "YouTube", "New", "Content"]
+        context_words = re.findall(r'\b[A-Za-z]{3,}\b', context)
+        return base_tags + context_words[:5]  # Add context words as tags
+                
+                try:
+                    # Get enabled channels with force refresh to check current toggle state
+                    enabled_channels = await self._get_enabled_channels(force_refresh=True)
+                    
+                    # Store channels for error handling
+                    self._found_channels = enabled_channels
+                    
+                    logger.info(f"[YouTube Upload] Found {len(enabled_channels)} enabled channels")
+                    
+                    if not enabled_channels:
+                        logger.error(f"[YouTube Upload] No enabled channels found - user_id: {self.user_id}, agent_id: {self.agent_id}")
+                        logger.error(f"[YouTube Upload] Channel metadata available: {bool(self.channel_metadata)}")
+                        logger.error(f"[YouTube Upload] Channel IDs available: {self.channel_ids}")
+                        
+                        return self.fail_response(
+                                "❌ **No YouTube channels enabled for this agent**\n\n"
+                                "**What this means:**\n"
+                                "You have YouTube channels connected, but they need to be enabled for this specific agent.\n\n"
+                                "**To fix this:**\n"
+                                "1. 🔧 Click the **MCP connections button** (⚙️ icon) next to the send button\n"
+                                "2. 🔛 **Toggle ON** your YouTube channels for this agent\n"
+                                "3. 🔄 Try your upload again\n\n"
+                                "**Note:** This is a security feature - social media channels must be explicitly enabled per agent.\n\n"
+                                "💡 Need to connect channels first? Use `youtube_authenticate` or go to Settings → Social Media"
+                            )
+                except Exception as e:
+                    logger.error(f"[YouTube Upload] Error fetching channels: {e}")
+                    return self.fail_response(
+                        f"❌ **Failed to fetch YouTube channels**\n\n"
+                        f"Error: {str(e)}\n\n"
+                        "**Try:**\n"
+                        "• Refreshing the page\n"
+                        "• Checking your internet connection\n"
+                        "• Re-connecting your YouTube account"
+                    )
+                
+                # If only one channel is enabled, auto-select it
+                if len(enabled_channels) == 1:
+                    channel_id = enabled_channels[0]["id"]
+                    channel_name = enabled_channels[0]["name"]
+                    logger.info(f"[YouTube Upload] Auto-selected the only enabled channel: {channel_name} ({channel_id})")
+                else:
+                    # Multiple channels enabled, user needs to specify
+                    channel_list = "\n".join([
+                        f"• **{ch['name']}** (@{ch.get('username', 'N/A')})\n  Channel ID: `{ch['id']}`"
+                        for ch in enabled_channels
+                    ])
+                    
+                    # Format channels for UI display
+                    formatted_channels = []
+                    for ch in enabled_channels:
+                        formatted_channels.append({
+                            "id": ch["id"],
+                            "name": ch["name"],
+                            "username": ch.get("username"),
+                            "profile_picture": ch.get("profile_picture"),
+                            "subscriber_count": ch.get("subscriber_count", 0),
+                            "view_count": ch.get("view_count", 0),
+                            "video_count": ch.get("video_count", 0)
+                        })
+                    
+                    return self.success_response({
+                        "message": f"🎯 **Multiple YouTube channels are enabled!**\n\n"
+                                  f"You have {len(enabled_channels)} channels available for upload:\n\n{channel_list}\n\n"
+                                  f"**Choose your upload method:**\n"
+                                  f"• **Specific channel**: `youtube_upload_video(channel_id='CHANNEL_ID', ...)`\n"
+                                  f"• **First enabled channel**: Just say 'upload to the first channel'\n"
+                                  f"• **Ask me**: 'Which channel should I upload to?'\n\n"
+                                  f"💡 **Pro tip**: You can also say the channel name instead of ID!",
+                        "channels": formatted_channels,
+                        "action_needed": "select_channel",
+                        "upload_ready": True,
+                        "multi_channel": True,
+                        "enabled_count": len(enabled_channels)
+                    })
+            else:
+                # Verify the specified channel is enabled
+                enabled_channels = await self._get_enabled_channels()
+                enabled_ids = [ch["id"] for ch in enabled_channels]
+                
+                if channel_id not in enabled_ids:
+                    # Check if there are any enabled channels to suggest
+                    if enabled_channels:
+                        channel_names = ", ".join([ch["name"] for ch in enabled_channels])
+                        
+                        # Format channels for UI display
+                        formatted_channels = []
+                        for ch in enabled_channels:
+                            formatted_channels.append({
+                                "id": ch["id"],
+                                "name": ch["name"],
+                                "username": ch.get("username"),
+                                "profile_picture": ch.get("profile_picture"),
+                                "subscriber_count": ch.get("subscriber_count", 0),
+                                "view_count": ch.get("view_count", 0),
+                                "video_count": ch.get("video_count", 0)
+                            })
+                        
+                        return self.success_response({
+                            "message": f"Channel {channel_id} is not enabled. Try uploading without specifying channel_id to auto-select from enabled channels: {channel_names}. Or enable the channel in the MCP connections dropdown.",
+                            "channels": formatted_channels,
+                            "action_needed": "select_enabled_channel"
+                        })
+                    else:
+                        return self.success_response({
+                            "message": f"Channel {channel_id} is not enabled. Please enable it in the MCP connections dropdown first.",
+                            "channels": [],
+                            "action_needed": "enable_channels"
+                        })
+            
+            # Generate metadata if not provided
+            if context and (not title or not description or not tags):
+                logger.info(f"Generating metadata from context: {context}")
+                generated = self._generate_video_metadata(context)
+                
+                # Use generated values if originals not provided
+                if not title:
+                    title = generated["title"]
+                    logger.info(f"Generated title: {title}")
+                
+                if not description:
+                    description = generated["description"]
+                    logger.info(f"Generated description preview: {description[:100]}...")
+                
+                if not tags:
+                    tags = generated["tags"]
+                    logger.info(f"Generated tags: {tags}")
+            
+            # Smart fallback with SEO optimization if still no metadata
+            if not title:
+                title = f"Amazing New Video - {datetime.now(timezone.utc).strftime('%B %d, %Y')} | Must Watch!"
+                logger.info(f"Generated fallback title: {title}")
+            
+            if not description:
+                description = f"""🎬 Check out this amazing video!
+
+📅 Uploaded: {datetime.now(timezone.utc).strftime('%B %d, %Y')}
+
+Don't forget to:
+👍 Like if you enjoyed
+💬 Comment your thoughts
+🔔 Subscribe for more content
+📤 Share with friends
+
+#Video #{datetime.now(timezone.utc).year} #YouTube #MustWatch #Trending #NewVideo"""
+                logger.info("Generated comprehensive fallback description")
+            
+            if not tags:
+                # Always generate comprehensive SEO tags even as fallback
+                current_year = str(datetime.now(timezone.utc).year)
+                current_month = datetime.now(timezone.utc).strftime("%B")
+                tags = [
+                    "Video", current_year, "YouTube", "New Video",
+                    "Must Watch", "Trending", current_month + " " + current_year,
+                    "Latest", "Content", "Entertainment", "Subscribe",
+                    "Viral", "Amazing", "Best", "Top"
+                ][:15]  # Limit to 15 tags
+                logger.info(f"Generated {len(tags)} fallback SEO tags")
+            
+            # Prepare upload parameters
+            upload_params = {
+                "channel_id": channel_id,
+                "title": title,
+                "description": description,
+                "tags": tags,
+                "category_id": "22",  # People & Blogs default
+                "privacy_status": privacy,
+                "made_for_kids": False,
+                "notify_subscribers": True
+            }
+            
+            # Only add reference IDs if:
+            # 1. They were explicitly provided, OR
+            # 2. Auto-discovery is enabled (which should be default for uploads)
+            if video_reference_id:
+                upload_params["video_reference_id"] = video_reference_id
+                logger.info(f"[YouTube Upload] Using provided video reference: {video_reference_id}")
+            else:
+                # Always enable auto-discovery when no explicit reference is provided
+                # This allows the system to find recently uploaded files
+                logger.info("[YouTube Upload] No video reference provided, enabling auto-discovery")
+                upload_params["auto_discover"] = True
+                
+            if thumbnail_reference_id:
+                upload_params["thumbnail_reference_id"] = thumbnail_reference_id
+                logger.info(f"[YouTube Upload] Using provided thumbnail reference: {thumbnail_reference_id}")
+            
+            # Make API call to backend upload service with comprehensive error handling
+            try:
+                async with aiohttp.ClientSession() as session:
+                    headers = {
+                        "Authorization": f"Bearer {self.jwt_token}",
+                        "Content-Type": "application/json"
+                    }
+                    
+                    # Call the universal social media upload endpoint 
+                    logger.info(f"[YouTube Upload] Calling universal upload API: {self.base_url}/youtube/universal-upload")
+                    
+                    # Convert to universal format
+                    universal_params = {
+                        "platform": "youtube",
+                        "account_id": channel_id,
+                        "account_name": channel_name,
+                        "title": title,
+                        "description": description,
+                        "tags": tags,
+                        "privacy_status": privacy,
+                        "video_reference_id": video_reference_id,
+                        "thumbnail_reference_id": thumbnail_reference_id,
+                        "auto_discover": upload_params.get("auto_discover", True),
+                        "file_name": "auto-detected",
+                        "file_size": 0,
+                        "platform_settings": {
+                            "made_for_kids": upload_params.get("made_for_kids", False),
+                            "category_id": upload_params.get("category_id", "22"),
+                            "notify_subscribers": upload_params.get("notify_subscribers", True)
+                        }
+                    }
+                    
+                    async with session.post(
+                        f"{self.base_url}/youtube/universal-upload",
+                        headers=headers,
+                        json=universal_params,
+                        timeout=aiohttp.ClientTimeout(total=30)  # Shorter timeout since we return immediately
+                    ) as response:
+                        if response.status == 401:
+                            # JWT token expired - try to regenerate
+                            logger.warning("[YouTube Upload] JWT token expired, regenerating...")
+                            self.jwt_token = self._create_jwt_token()
+                            # Retry with new token
+                            headers["Authorization"] = f"Bearer {self.jwt_token}"
+                            async with session.post(
+                                f"{self.base_url}/youtube/universal-upload",
+                                headers=headers,
+                                json=universal_params,
+                                timeout=aiohttp.ClientTimeout(total=30)
+                            ) as retry_response:
+                                response = retry_response
+                        
+                        if response.status != 200:
+                            error_text = await response.text()
+                            logger.error(f"[YouTube Upload] Upload failed with status {response.status}: {error_text}")
+                            
+                            # Provide helpful guidance based on specific errors
+                            if "No video file found" in error_text or "no video found" in error_text.lower():
+                                return self.fail_response(
+                                    "❌ **No video file found**\n\n"
+                                    "**To upload a video to YouTube:**\n"
+                                    "1. 📎 Attach your video file to the message (drag & drop or paperclip)\n"
+                                    "2. 💬 Tell me to upload it to YouTube\n\n"
+                                    "**Important:** Video files are automatically prepared when attached.\n"
+                                    "They get reference IDs, not stored in /workspace.\n\n"
+                                    "If you just attached a file, wait a moment for processing."
+                                )
+                            elif "can't compare offset" in error_text:
+                                # Datetime comparison error - usually a timezone issue
+                                return self.fail_response(
+                                    "⚠️ **Temporary authentication error**\n\n"
+                                    "There was a timing issue with the authentication.\n"
+                                    "Please try again in a moment."
+                                )
+                            elif "token" in error_text.lower() or "auth" in error_text.lower():
+                                return self.fail_response(
+                                    "🔐 **Authentication error**\n\n"
+                                    "Your YouTube authentication may have expired.\n\n"
+                                    "**To fix:**\n"
+                                    "1. Use `youtube_authenticate` to reconnect\n"
+                                    "2. Or go to Settings → Social Media → YouTube\n"
+                                    "3. Re-authorize your channel"
+                                )
+                            elif "permission" in error_text.lower():
+                                return self.fail_response(
+                                    "🚫 **Permission denied**\n\n"
+                                    "You don't have permission to upload to this channel.\n\n"
+                                    "**Check:**\n"
+                                    "• You're using the correct YouTube account\n"
+                                    "• The channel has upload permissions enabled\n"
+                                    "• Your account is verified for video uploads"
+                                )
+                            elif "quota" in error_text.lower():
+                                return self.fail_response(
+                                    "📊 **Upload quota exceeded**\n\n"
+                                    "YouTube's daily upload limit has been reached.\n\n"
+                                    "**Info:**\n"
+                                    "• YouTube limits uploads per day\n"
+                                    "• Limit resets at midnight Pacific Time\n"
+                                    "• Try again tomorrow"
+                                )
+                            else:
+                                # Generic error with full details
+                                return self.fail_response(
+                                    f"❌ **Upload failed**\n\n"
+                                    f"Status code: {response.status}\n"
+                                    f"Error: {error_text[:200]}...\n\n"  # Truncate long errors
+                                    "**Try:**\n"
+                                    "• Checking your video file is valid\n"
+                                    "• Ensuring file size is under 128GB\n"
+                                    "• Verifying your channel connection\n"
+                                    "• Trying again in a few moments"
+                                )
+            except aiohttp.ClientTimeout:
+                logger.error("[YouTube Upload] Request timed out")
+                return self.fail_response(
+                    "⏱️ **Upload timed out**\n\n"
+                    "The upload took too long to complete.\n\n"
+                    "**This could mean:**\n"
+                    "• Your video file is very large\n"
+                    "• Slow internet connection\n"
+                    "• YouTube servers are busy\n\n"
+                    "**Try:**\n"
+                    "• Using a smaller video file\n"
+                    "• Checking your internet speed\n"
+                    "• Trying again later"
+                )
+            except aiohttp.ClientError as e:
+                logger.error(f"[YouTube Upload] Network error: {e}")
+                return self.fail_response(
+                    f"🌐 **Network error**\n\n"
+                    f"Failed to connect to upload service.\n\n"
+                    f"Error: {str(e)}\n\n"
+                    "**Check:**\n"
+                    "• Your internet connection\n"
+                    "• Service availability\n"
+                    "• Try again in a moment"
+                )
+            except Exception as e:
+                logger.error(f"[YouTube Upload] Unexpected error during upload: {e}", exc_info=True)
+                return self.fail_response(
+                    f"❌ **Unexpected error**\n\n"
+                    f"Something went wrong during upload.\n\n"
+                    f"Error: {str(e)}\n\n"
+                    "Please try again or contact support if the issue persists."
+                )
+            
+            # Success - process the response
+            data = await response.json()
+            
+            # Get channel name for better response
+            # First update metadata if needed
+            if channel_id not in self.channel_metadata:
+                enabled_channels = await self._get_enabled_channels()
+                self.channel_metadata = {ch['id']: ch for ch in enabled_channels}
+            
+            channel_name = self.channel_metadata.get(channel_id, {}).get("name", channel_id)
+            upload_id = data.get("upload_id")
+            
+            logger.info(f"[YouTube Upload] Upload initiated with progress tracking. Upload ID: {upload_id}")
+            
+            # Return immediately with upload progress information
+            # This allows the frontend to show the progress bar while upload happens in background
+            channel_info = {
+                "id": channel_id,
+                "name": channel_name,
+                "profile_picture": self.channel_metadata.get(channel_id, {}).get("profile_picture"),
+                "subscriber_count": self.channel_metadata.get(channel_id, {}).get("subscriber_count", 0),
+                "view_count": self.channel_metadata.get(channel_id, {}).get("view_count", 0),
+                "video_count": self.channel_metadata.get(channel_id, {}).get("video_count", 0)
+            }
+            
+            return self.success_response({
+                "upload_id": upload_id,
+                "status": "uploading", 
+                "channel_name": channel_name,
+                "title": title,
+                "message": f"🎬 **Uploading '{title}' to {channel_name}...**\n\n📤 Upload started - progress will be tracked automatically!",
+                "upload_started": True,  # Flag for frontend to show progress view
+                "channel": channel_info,  # Single channel format (backward compatibility)
+                "channels": [channel_info],  # Multiple channels format (frontend expects this)
+                "has_channels": True,  # Ensure frontend knows channels are available
+                "single_channel": True
+            })
+
+        except Exception as e:
+            error_str = str(e)
+            logger.error(f"[YouTube Upload] Unexpected error during upload: {e}", exc_info=True)
+            
+            # SMART RECOVERY: If connection closed or timeout, check for recent success
+            if "connection" in error_str.lower() or "timeout" in error_str.lower() or "closed" in error_str.lower():
+                logger.info(f"[YouTube Upload] Connection error detected, checking for recent upload success...")
+                
+                # Wait a moment for any background upload to complete
+                await asyncio.sleep(2)
+                
+                recent_upload = await self._check_recent_upload_success()
+                if recent_upload:
+                    video_id = recent_upload.get('youtube_video_id')
+                    upload_title = recent_upload.get('title')
+                    upload_channel_id = recent_upload.get('channel_id')
+                    
+                    # Get channel name
+                    channel_name = "YouTube Channel"
+                    if self.channel_metadata and upload_channel_id in self.channel_metadata:
+                        channel_name = self.channel_metadata[upload_channel_id]['name']
+                    
+                    video_url = f"https://www.youtube.com/watch?v={video_id}"
+                    
+                    logger.info(f"[YouTube Upload] ✅ RECOVERED SUCCESS! Video uploaded despite connection error: {video_id}")
+                    
+                    return self.success_response({
+                        "message": f"🎉 **Upload Recovered Successfully!**\n\n🎬 **'{upload_title}'** was uploaded successfully despite the connection issue!\n\n📺 **Channel**: {channel_name}\n🔗 **Watch**: {video_url}\n\n✨ **Recovery**: Found successful upload in database",
+                        "video_id": video_id,
+                        "video_url": video_url,
+                        "title": upload_title,
+                        "channel_name": channel_name,
+                        "status": "completed",
+                        "upload_recovered": True,
+                        "connection_recovered": True
+                    })
+            
+            return self.fail_response(f"Upload failed: {str(e)}")
+
+    # End of youtube_upload_video method
+
+    @openapi_schema({
+        "type": "function",
+        "function": {
+            "name": "youtube_download_caption",
+            "description": "Download caption/subtitle content for a video in various formats (srt, vtt, ttml, etc.)",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "video_id": {
+                        "type": "string",
+                        "description": "The YouTube video ID"
+                    },
+                    "caption_id": {
+                        "type": "string",
+                        "description": "The caption ID obtained from youtube_list_captions"
+                    },
+                    "format": {
+                        "type": "string",
+                        "description": "Caption format: srt, vtt, ttml, srv1, srv2, srv3 (default: srt)",
+                        "enum": ["srt", "vtt", "ttml", "srv1", "srv2", "srv3"]
+                    }
+                },
+                "required": ["video_id", "caption_id"]
+            }
+        }
+    })
+    async def youtube_download_caption(self, video_id: str, caption_id: str, format: str = "srt") -> ToolResult:
+        """Download caption/subtitle content for a video"""
+        try:
+            async with aiohttp.ClientSession() as session:
+                headers = {
+                    "Authorization": f"Bearer {self.jwt_token}",
+                    "Content-Type": "application/json"
+                }
+                
+                payload = {
+                    "caption_id": caption_id,
+                    "format": format
+                }
+                
+                async with session.post(
+                    f"{self.base_url}/youtube/videos/{video_id}/caption/download",
+                    headers=headers,
+                    json=payload
+                ) as response:
+                    if response.status != 200:
+                        error_text = await response.text()
+                        return self.fail_response(f"Failed to download caption: {error_text}")
+                    
+                    data = await response.json()
+                    content = data.get("content", "")
+                    
+                    return self.success_response({
+                        "content": content,
+                        "format": format,
+                        "caption_id": caption_id,
+                        "video_id": video_id,
+                        "message": f"Successfully downloaded caption in {format} format"
+                    })
+        except Exception as e:
+            logger.error(f"Error downloading caption: {e}")
+            return ToolResult(success=False, output=str(e))
+    
+    @openapi_schema({
+        "type": "function",
+        "function": {
+            "name": "youtube_list_channel_videos",
+            "description": "List videos from a YouTube channel with sorting options. Returns video metadata including views, likes, and publish dates.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "channel_id": {
+                        "type": "string",
+                        "description": "The YouTube channel ID"
+                    },
+                    "max_results": {
+                        "type": "integer",
+                        "description": "Maximum number of videos to return (default: 10, max: 50)",
+                        "minimum": 1,
+                        "maximum": 50
+                    },
+                    "order": {
+                        "type": "string",
+                        "description": "Sort order for videos",
+                        "enum": ["date", "rating", "relevance", "title", "viewCount"]
+                    }
+                },
+                "required": ["channel_id"]
+            }
+        }
+    })
+    async def youtube_list_channel_videos(
+        self, 
+        channel_id: str, 
+        max_results: int = 10,
+        order: str = "date"
+    ) -> ToolResult:
+        """List videos from a YouTube channel"""
+        # Check if tool is enabled for this specific channel
+        is_enabled, message = await self._check_enabled(channel_id)
+        if not is_enabled:
+            return self.fail_response(message)
+        
+        try:
+            async with aiohttp.ClientSession() as session:
+                headers = {
+                    "Authorization": f"Bearer {self.jwt_token}",
+                    "Content-Type": "application/json"
+                }
+                
+                params = {
+                    "max_results": max_results,
+                    "order": order
+                }
+                
+                async with session.get(
+                    f"{self.base_url}/youtube/channels/{channel_id}/videos",
+                    headers=headers,
+                    params=params
+                ) as response:
+                    if response.status != 200:
+                        error_text = await response.text()
+                        return self.fail_response(f"Failed to list channel videos: {error_text}")
+                    
+                    data = await response.json()
+                    videos = data.get("videos", [])
+                    
+                    if not videos:
+                        return self.success_response({
+                            "videos": [],
+                            "message": "No videos found in this channel"
+                        })
+                    
+                    message = f"📹 **Latest Videos from Channel:**\n\n"
+                    for idx, video in enumerate(videos, 1):
+                        message += f"{idx}. **{video.get('title', 'Untitled')}**\n"
+                        message += f"   • Video ID: {video.get('id')}\n"
+                        message += f"   • Views: {video.get('viewCount', 0):,}\n"
+                        message += f"   • Likes: {video.get('likeCount', 0):,}\n"
+                        message += f"   • Published: {video.get('publishedAt', 'Unknown')[:10]}\n"
+                        message += f"   • Duration: {video.get('duration', 'Unknown')}\n\n"
+                    
+                    return self.success_response({
+                        "videos": videos,
+                        "message": message,
+                        "count": len(videos),
+                        "channel_id": channel_id
+                    })
+        except Exception as e:
+            logger.error(f"Error listing channel videos: {e}")
+            return ToolResult(success=False, output=str(e))
+    
+    @openapi_schema({
+        "type": "function",
+        "function": {
+            "name": "youtube_list_playlists",
+            "description": "List all playlists from a YouTube channel. Returns playlist names, IDs, and video counts.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "channel_id": {
+                        "type": "string",
+                        "description": "The YouTube channel ID"
+                    },
+                    "max_results": {
+                        "type": "integer",
+                        "description": "Maximum number of playlists to return (default: 10, max: 50)",
+                        "minimum": 1,
+                        "maximum": 50
+                    }
+                },
+                "required": ["channel_id"]
+            }
+        }
+    })
+    async def youtube_list_playlists(self, channel_id: str, max_results: int = 10) -> ToolResult:
+        """List playlists from a YouTube channel"""
+        # Check if tool is enabled for this specific channel
+        is_enabled, message = await self._check_enabled(channel_id)
+        if not is_enabled:
+            return self.fail_response(message)
+        
+        try:
+            async with aiohttp.ClientSession() as session:
+                headers = {
+                    "Authorization": f"Bearer {self.jwt_token}",
+                    "Content-Type": "application/json"
+                }
+                
+                params = {"max_results": max_results}
+                
+                async with session.get(
+                    f"{self.base_url}/youtube/channels/{channel_id}/playlists",
+                    headers=headers,
+                    params=params
+                ) as response:
+                    if response.status != 200:
+                        error_text = await response.text()
+                        return self.fail_response(f"Failed to list playlists: {error_text}")
+                    
+                    data = await response.json()
+                    playlists = data.get("playlists", [])
+                    
+                    if not playlists:
+                        return self.success_response({
+                            "playlists": [],
+                            "message": "No playlists found in this channel"
+                        })
+                    
+                    message = f"📋 **Channel Playlists:**\n\n"
+                    for idx, playlist in enumerate(playlists, 1):
+                        message += f"{idx}. **{playlist.get('title', 'Untitled')}**\n"
+                        message += f"   • Playlist ID: {playlist.get('id')}\n"
+                        message += f"   • Videos: {playlist.get('itemCount', 0)}\n"
+                        message += f"   • Privacy: {playlist.get('privacyStatus', 'Unknown')}\n"
+                        if playlist.get('description'):
+                            desc = playlist['description'][:100]
+                            message += f"   • Description: {desc}...\n"
+                        message += "\n"
+                    
+                    return self.success_response({
+                        "playlists": playlists,
+                        "message": message,
+                        "count": len(playlists),
+                        "channel_id": channel_id
+                    })
+        except Exception as e:
+            logger.error(f"Error listing playlists: {e}")
+            return ToolResult(success=False, output=str(e))
+    
+    @openapi_schema({
+        "type": "function",
+        "function": {
+            "name": "youtube_list_subscriptions",
+            "description": "List public subscriptions of a YouTube channel. Shows channels that this channel is subscribed to.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "channel_id": {
+                        "type": "string",
+                        "description": "The YouTube channel ID"
+                    },
+                    "max_results": {
+                        "type": "integer",
+                        "description": "Maximum number of subscriptions to return (default: 10, max: 50)",
+                        "minimum": 1,
+                        "maximum": 50
+                    }
+                },
+                "required": ["channel_id"]
+            }
+        }
+    })
+    async def youtube_list_subscriptions(self, channel_id: str, max_results: int = 10) -> ToolResult:
+        """List subscriptions of a YouTube channel"""
+        # Check if tool is enabled for this specific channel
+        is_enabled, message = await self._check_enabled(channel_id)
+        if not is_enabled:
+            return self.fail_response(message)
+        
+        try:
+            async with aiohttp.ClientSession() as session:
+                headers = {
+                    "Authorization": f"Bearer {self.jwt_token}",
+                    "Content-Type": "application/json"
+                }
+                
+                params = {"max_results": max_results}
+                
+                async with session.get(
+                    f"{self.base_url}/youtube/channels/{channel_id}/subscriptions",
+                    headers=headers,
+                    params=params
+                ) as response:
+                    if response.status != 200:
+                        error_text = await response.text()
+                        return self.fail_response(f"Failed to list subscriptions: {error_text}")
+                    
+                    data = await response.json()
+                    subscriptions = data.get("subscriptions", [])
+                    
+                    if not subscriptions:
+                        return self.success_response({
+                            "subscriptions": [],
+                            "message": "No public subscriptions found for this channel"
+                        })
+                    
+                    message = f"👥 **Channel Subscriptions:**\n\n"
+                    for idx, sub in enumerate(subscriptions, 1):
+                        message += f"{idx}. **{sub.get('title', 'Unknown Channel')}**\n"
+                        message += f"   • Channel ID: {sub.get('channelId')}\n"
+                        if sub.get('description'):
+                            desc = sub['description'][:100]
+                            message += f"   • Description: {desc}...\n"
+                        message += "\n"
+                    
+                    return self.success_response({
+                        "subscriptions": subscriptions,
+                        "message": message,
+                        "count": len(subscriptions),
+                        "channel_id": channel_id
+                    })
+        except Exception as e:
+            logger.error(f"Error listing subscriptions: {e}")
+            return ToolResult(success=False, output=str(e))
+    
+    @openapi_schema({
+        "type": "function",
+        "function": {
+            "name": "youtube_subscribe_channel",
+            "description": "Subscribe to another YouTube channel from your connected channel.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "channel_id": {
+                        "type": "string",
+                        "description": "Your YouTube channel ID (the channel doing the subscribing)"
+                    },
+                    "target_channel_id": {
+                        "type": "string",
+                        "description": "The channel ID to subscribe to"
+                    }
+                },
+                "required": ["channel_id", "target_channel_id"]
+            }
+        }
+    })
+    async def youtube_subscribe_channel(self, channel_id: str, target_channel_id: str) -> ToolResult:
+        """Subscribe to another YouTube channel"""
+        # Check if tool is enabled for this specific channel
+        is_enabled, message = await self._check_enabled(channel_id)
+        if not is_enabled:
+            return self.fail_response(message)
+        
+        try:
+            async with aiohttp.ClientSession() as session:
+                headers = {
+                    "Authorization": f"Bearer {self.jwt_token}",
+                    "Content-Type": "application/json"
+                }
+                
+                payload = {"target_channel_id": target_channel_id}
+                
+                async with session.post(
+                    f"{self.base_url}/youtube/channels/{channel_id}/subscribe",
+                    headers=headers,
+                    json=payload
+                ) as response:
+                    if response.status != 200:
+                        error_text = await response.text()
+                        return self.fail_response(f"Failed to subscribe: {error_text}")
+                    
+                    data = await response.json()
+                    
+                    return self.success_response({
+                        "subscription_id": data.get("subscription_id"),
+                        "message": f"✅ Successfully subscribed to channel {target_channel_id}",
+                        "channel_id": channel_id,
+                        "target_channel_id": target_channel_id
+                    })
+        except Exception as e:
+            logger.error(f"Error subscribing to channel: {e}")
+            return ToolResult(success=False, output=str(e))
+    
+    @openapi_schema({
+        "type": "function",
+        "function": {
+            "name": "youtube_manage_video",
+            "description": "Comprehensive video management tool: Get details, update metadata, change thumbnail - all in one smart interface. Can perform multiple operations in a single call.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "video_id": {
+                        "type": "string",
+                        "description": "The YouTube video ID to manage"
+                    },
+                    "operation": {
+                        "type": "string",
+                        "description": "Operation to perform: 'view' (get details), 'update' (modify metadata), 'thumbnail' (update thumbnail), 'optimize' (AI suggestions), or 'all' (view then update)",
+                        "enum": ["view", "update", "thumbnail", "optimize", "all"]
+                    },
+                    "updates": {
+                        "type": "object",
+                        "description": "Updates to apply (for 'update' or 'all' operations)",
+                        "properties": {
+                            "title": {"type": "string", "description": "New video title"},
+                            "description": {"type": "string", "description": "New video description"},
+                            "tags": {"type": "array", "items": {"type": "string"}, "description": "New tags"},
+                            "category_id": {"type": "string", "description": "New category ID"},
+                            "privacy_status": {"type": "string", "enum": ["private", "unlisted", "public"]},
+                            "thumbnail_path": {"type": "string", "description": "Path to new thumbnail image"}
+                        }
+                    },
+                    "include_analytics": {
+                        "type": "boolean",
+                        "description": "Include performance analytics and optimization suggestions (default: true)"
+                    }
+                },
+                "required": ["video_id", "operation"]
+            }
+        }
+    })
+    async def youtube_manage_video(
+        self,
+        video_id: str,
+        operation: str = "view",
+        updates: Optional[Dict[str, Any]] = None,
+        include_analytics: bool = True
+    ) -> ToolResult:
+        """Unified video management - view, update, optimize all in one"""
+        try:
+            results = {}
+            
+            # Get current video details if needed
+            if operation in ["view", "all", "optimize"]:
+                # Direct API call to get video details
+                async with aiohttp.ClientSession() as session:
+                    headers = {
+                        "Authorization": f"Bearer {self.jwt_token}",
+                        "Content-Type": "application/json"
+                    }
+                    
+                    async with session.get(
+                        f"{self.base_url}/youtube/videos/{video_id}/details",
+                        headers=headers
+                    ) as response:
+                        if response.status != 200:
+                            error_text = await response.text()
+                            return self.fail_response(f"Failed to get video details: {error_text}")
+                        
+                        data = await response.json()
+                        results["current_details"] = data
+            
+            # Apply updates if requested
+            if operation in ["update", "all"] and updates:
+                # Handle thumbnail separately if provided
+                thumbnail_path = updates.pop("thumbnail_path", None)
+                
+                # Update video metadata if any non-thumbnail updates
+                if updates:
+                    # Direct API call to update video
+                    async with aiohttp.ClientSession() as session:
+                        headers = {
+                            "Authorization": f"Bearer {self.jwt_token}",
+                            "Content-Type": "application/json"
+                        }
+                        
+                        async with session.put(
+                            f"{self.base_url}/youtube/videos/{video_id}",
+                            headers=headers,
+                            json=updates
+                        ) as response:
+                            if response.status != 200:
+                                error_text = await response.text()
+                                return self.fail_response(f"Failed to update video: {error_text}")
+                            
+                            data = await response.json()
+                            results["metadata_update"] = data
+                
+                # Update thumbnail if provided
+                if thumbnail_path:
+                    # Direct API call to update thumbnail
+                    if not os.path.exists(thumbnail_path):
+                        return self.fail_response(f"Thumbnail file not found: {thumbnail_path}")
+                    
+                    async with aiohttp.ClientSession() as session:
+                        headers = {"Authorization": f"Bearer {self.jwt_token}"}
+                        
+                        with open(thumbnail_path, 'rb') as f:
+                            data = aiohttp.FormData()
+                            data.add_field('thumbnail', f, filename=os.path.basename(thumbnail_path))
+                            
+                            async with session.post(
+                                f"{self.base_url}/youtube/videos/{video_id}/thumbnail",
+                                headers=headers,
+                                data=data
+                            ) as response:
+                                if response.status != 200:
+                                    error_text = await response.text()
+                                    return self.fail_response(f"Failed to update thumbnail: {error_text}")
+                                
+                                thumb_data = await response.json()
+                                results["thumbnail_update"] = thumb_data
+            
+            # Handle thumbnail-only operation
+            elif operation == "thumbnail" and updates and updates.get("thumbnail_path"):
+                thumbnail_path = updates["thumbnail_path"]
+                
+                if not os.path.exists(thumbnail_path):
+                    return self.fail_response(f"Thumbnail file not found: {thumbnail_path}")
+                
+                async with aiohttp.ClientSession() as session:
+                    headers = {"Authorization": f"Bearer {self.jwt_token}"}
+                    
+                    with open(thumbnail_path, 'rb') as f:
+                        data = aiohttp.FormData()
+                        data.add_field('thumbnail', f, filename=os.path.basename(thumbnail_path))
+                        
+                        async with session.post(
+                            f"{self.base_url}/youtube/videos/{video_id}/thumbnail",
+                            headers=headers,
+                            data=data
+                        ) as response:
+                            if response.status != 200:
+                                error_text = await response.text()
+                                return self.fail_response(f"Failed to update thumbnail: {error_text}")
+                            
+                            thumb_data = await response.json()
+                            results["thumbnail_update"] = thumb_data
+            
+            # Provide optimization suggestions
+            if operation == "optimize" and include_analytics:
+                video_data = results.get("current_details", {}).get("video", {})
+                suggestions = self._generate_optimization_suggestions(video_data)
+                results["optimization_suggestions"] = suggestions
+            
+            # Build comprehensive response message
+            message = self._build_manage_video_message(operation, results, video_id)
+            
+            return self.success_response({
+                "video_id": video_id,
+                "operation": operation,
+                "results": results,
+                "message": message
+            })
+            
+        except Exception as e:
+            logger.error(f"Error in youtube_manage_video: {e}")
+            return ToolResult(success=False, output=str(e))
+    
+    def _generate_optimization_suggestions(self, video_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Generate AI-powered optimization suggestions based on video performance"""
+        suggestions = {
+            "title_optimization": [],
+            "description_optimization": [],
+            "tag_suggestions": [],
+            "timing_suggestions": [],
+            "engagement_tips": []
+        }
+        
+        # Analyze title
+        title = video_data.get("title", "")
+        if len(title) < 30:
+            suggestions["title_optimization"].append("Consider a longer, more descriptive title (30-60 characters)")
+        if not any(char in title for char in ["!", "?", "-", ":"]):
+            suggestions["title_optimization"].append("Add punctuation for better engagement")
+        
+        # Analyze description
+        description = video_data.get("description", "")
+        if len(description) < 200:
+            suggestions["description_optimization"].append("Expand description to at least 200 characters for better SEO")
+        if "http" not in description.lower():
+            suggestions["description_optimization"].append("Add relevant links to boost engagement")
+        
+        # Analyze performance metrics
+        stats = video_data.get("statistics", {})
+        views = stats.get("viewCount", 0)
+        likes = stats.get("likeCount", 0)
+        
+        if views > 0 and likes / views < 0.04:
+            suggestions["engagement_tips"].append("Like ratio below 4% - consider more engaging content or clearer CTAs")
+        
+        # Tag suggestions
+        current_tags = video_data.get("tags", [])
+        if len(current_tags) < 5:
+            suggestions["tag_suggestions"].append("Add more tags (aim for 5-15 relevant tags)")
+        
+        return suggestions
+    
+    def _build_manage_video_message(self, operation: str, results: Dict[str, Any], video_id: str) -> str:
+        """Build a comprehensive message for video management results"""
+        message = f"📹 **Video Management Report** (ID: {video_id})\n\n"
+        
+        if "current_details" in results:
+            video = results["current_details"].get("video", {})
+            message += f"**Current Status:**\n"
+            message += f"• Title: {video.get('title', 'Unknown')}\n"
+            message += f"• Views: {video.get('statistics', {}).get('viewCount', 0):,}\n"
+            message += f"• Privacy: {video.get('privacyStatus', 'Unknown')}\n\n"
+        
+        if "metadata_update" in results:
+            message += "✅ **Metadata Updated Successfully**\n\n"
+        
+        if "thumbnail_update" in results:
+            message += "✅ **Thumbnail Updated Successfully**\n\n"
+        
+        if "optimization_suggestions" in results:
+            suggestions = results["optimization_suggestions"]
+            message += "💡 **Optimization Suggestions:**\n"
+            
+            for category, items in suggestions.items():
+                if items:
+                    category_name = category.replace("_", " ").title()
+                    message += f"\n**{category_name}:**\n"
+                    for item in items:
+                        message += f"• {item}\n"
+        
+        return message
+    
+    @openapi_schema({
+        "type": "function",
+        "function": {
+            "name": "youtube_smart_search",
+            "description": "Intelligent unified search that understands context. Automatically detects if you're searching for videos, channels, playlists, or specific @handles. Provides enhanced results with analytics.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Search query - can be keywords, @handle, channel name, or video title"
+                    },
+                    "search_type": {
+                        "type": "string",
+                        "description": "Force specific search type (optional - auto-detected if not specified)",
+                        "enum": ["auto", "video", "channel", "playlist", "handle"]
+                    },
+                    "filters": {
+                        "type": "object",
+                        "description": "Advanced search filters",
+                        "properties": {
+                            "max_results": {"type": "integer", "minimum": 1, "maximum": 50},
+                            "order": {"type": "string", "enum": ["relevance", "date", "rating", "title", "viewCount"]},
+                            "published_after": {"type": "string", "description": "ISO date string"},
+                            "published_before": {"type": "string", "description": "ISO date string"},
+                            "min_views": {"type": "integer", "description": "Minimum view count"},
+                            "channel_id": {"type": "string", "description": "Limit to specific channel"}
+                        }
+                    },
+                    "include_analytics": {
+                        "type": "boolean",
+                        "description": "Include performance metrics and insights (default: true)"
+                    }
+                },
+                "required": ["query"]
+            }
+        }
+    })
+    async def youtube_smart_search(
+        self,
+        query: str,
+        search_type: str = "auto",
+        filters: Optional[Dict[str, Any]] = None,
+        include_analytics: bool = True
+    ) -> ToolResult:
+        """Smart unified search with context understanding"""
+        try:
+            # Auto-detect search type from query
+            if search_type == "auto":
+                search_type = self._detect_search_type(query)
+                logger.info(f"Auto-detected search type: {search_type}")
+            
+            # Handle @handle searches
+            if search_type == "handle" or query.startswith("@"):
+                handle_result = await self.youtube_get_channel_by_handle(query)
+                if handle_result.success:
+                    # Enhance with analytics if requested
+                    if include_analytics:
+                        channel = handle_result.output.get("channel", {})
+                        channel_id = channel.get("id")
+                        if channel_id:
+                            # Get detailed analytics
+                            analytics_result = await self.youtube_channels(channel_id=channel_id, include_analytics=True)
+                            if analytics_result.success:
+                                handle_result.output["analytics"] = analytics_result.output.get("analytics_summary")
+                return handle_result
+            
+            # Regular search with filters
+            filters = filters or {}
+            search_result = await self.youtube_search(
+                query=query,
+                search_type=search_type if search_type != "auto" else "video",
+                max_results=filters.get("max_results", 10),
+                order=filters.get("order", "relevance")
+            )
+            
+            if not search_result.success:
+                return search_result
+            
+            # Enhance results with additional insights
+            if include_analytics:
+                results = search_result.output.get("results", [])
+                enhanced_results = self._enhance_search_results(results, search_type)
+                search_result.output["enhanced_results"] = enhanced_results
+                
+                # Add search insights
+                insights = self._generate_search_insights(results, query)
+                search_result.output["insights"] = insights
+            
+            # Build enhanced message
+            message = self._build_smart_search_message(
+                query, search_type, search_result.output, include_analytics
+            )
+            search_result.output["message"] = message
+            
+            return search_result
+            
+        except Exception as e:
+            logger.error(f"Error in youtube_smart_search: {e}")
+            return ToolResult(success=False, output=str(e))
+    
+    def _detect_search_type(self, query: str) -> str:
+        """Intelligently detect the type of search from the query"""
+        query_lower = query.lower()
+        
+        # Check for @handle
+        if query.startswith("@"):
+            return "handle"
+        
+        # Check for channel indicators
+        channel_keywords = ["channel", "creator", "youtuber", "subscribe"]
+        if any(keyword in query_lower for keyword in channel_keywords):
+            return "channel"
+        
+        # Check for playlist indicators
+        playlist_keywords = ["playlist", "collection", "series", "compilation"]
+        if any(keyword in query_lower for keyword in playlist_keywords):
+            return "playlist"
+        
+        # Default to video search
+        return "video"
+    
+    def _enhance_search_results(self, results: List[Dict], search_type: str) -> List[Dict]:
+        """Add performance insights to search results"""
+        enhanced = []
+        for result in results[:5]:  # Enhance top 5 results
+            enhanced_result = result.copy()
+            
+            if search_type == "video":
+                # Add engagement metrics
+                views = result.get("viewCount", 0)
+                if views > 1000000:
+                    enhanced_result["performance_badge"] = "🔥 Viral"
+                elif views > 100000:
+                    enhanced_result["performance_badge"] = "📈 Popular"
+                elif views > 10000:
+                    enhanced_result["performance_badge"] = "👍 Growing"
+            
+            enhanced.append(enhanced_result)
+        
+        return enhanced
+    
+    def _generate_search_insights(self, results: List[Dict], query: str) -> Dict[str, Any]:
+        """Generate insights from search results"""
+        insights = {
+            "total_results": len(results),
+            "query_analysis": f"Searched for: '{query}'",
+            "top_performer": None,
+            "avg_views": 0
+        }
+        
+        if results:
+            # Find top performer
+            top = max(results, key=lambda x: x.get("viewCount", 0), default=None)
+            if top:
+                insights["top_performer"] = {
+                    "title": top.get("title"),
+                    "views": top.get("viewCount", 0)
+                }
+            
+            # Calculate average views
+            total_views = sum(r.get("viewCount", 0) for r in results)
+            insights["avg_views"] = total_views // len(results) if results else 0
+        
+        return insights
+    
+    def _build_smart_search_message(
+        self, query: str, search_type: str, output: Dict, include_analytics: bool
+    ) -> str:
+        """Build enhanced search results message"""
+        message = f"🔍 **Smart Search Results for: '{query}'**\n"
+        message += f"Type: {search_type.title()} Search\n\n"
+        
+        results = output.get("results", [])
+        if not results:
+            return message + "No results found. Try different keywords or broaden your search."
+        
+        # Add insights if available
+        if include_analytics and "insights" in output:
+            insights = output["insights"]
+            message += "📊 **Search Insights:**\n"
+            message += f"• Found {insights['total_results']} results\n"
+            if insights.get("top_performer"):
+                top = insights["top_performer"]
+                message += f"• Top result: {top['title']} ({top['views']:,} views)\n"
+            message += f"• Average views: {insights['avg_views']:,}\n\n"
+        
+        # Add top results
+        message += "**Top Results:**\n"
+        for i, result in enumerate(results[:5], 1):
+            if search_type == "video":
+                message += f"{i}. **{result.get('title', 'Unknown')}**\n"
+                message += f"   • Channel: {result.get('channelTitle', 'Unknown')}\n"
+                if "performance_badge" in result:
+                    message += f"   • {result['performance_badge']}\n"
+            elif search_type == "channel":
+                message += f"{i}. **{result.get('title', 'Unknown')}**\n"
+                if result.get('description'):
+                    message += f"   • {result['description'][:100]}...\n"
+            message += "\n"
+        
+        return message
+    
+    async def _verify_upload_on_youtube(self, channel_id: str, title: str, upload_time: datetime, user_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Smart verification by directly checking YouTube for the uploaded video.
+        This is more reliable than database polling since it checks the source of truth.
+        
+        Args:
+            channel_id: The channel where video was uploaded
+            title: Expected video title 
+            upload_time: When the upload was initiated
+            user_id: User ID for API access
+            
+        Returns:
+            Dict with video details if found on YouTube, None otherwise
+        """
+        try:
+            logger.info(f"[YouTube Smart Verify] Checking YouTube directly for video '{title}' on channel {channel_id}")
+            
+            # Use YouTube service to list recent videos from channel
+            from youtube_mcp.youtube_service import YouTubeService
+            youtube_service = YouTubeService(self.db)
+            
+            # List recent videos from the channel (last 10 videos should be enough)
+            videos_result = await youtube_service.list_channel_videos(
+                user_id=user_id, 
+                channel_id=channel_id,
+                target_channel_id=channel_id,
+                max_results=10
+            )
+            
+            if not videos_result.get('success') or not videos_result.get('videos'):
+                logger.warning(f"[YouTube Smart Verify] Could not list videos from channel {channel_id}")
+                return None
+            
+            # Look for our video by title and upload time
+            videos = videos_result['videos']
+            for video in videos:
+                video_title = video.get('title', '')
+                video_published = video.get('published_at')
+                
+                # Match by title (exact match or very close)
+                title_match = (
+                    video_title.lower() == title.lower() or
+                    title.lower() in video_title.lower() or
+                    video_title.lower() in title.lower()
+                )
+                
+                # Match by upload time (within last hour)
+                time_match = True  # Default to true for now, we can add time checking if needed
+                
+                if title_match:
+                    logger.info(f"[YouTube Smart Verify] ✅ Found uploaded video on YouTube!")
+                    logger.info(f"[YouTube Smart Verify] Video ID: {video.get('id')}, Title: {video_title}")
+                    
+                    # Return rich video details
+                    return {
+                        "success": True,
+                        "video_id": video.get('id'),
+                        "title": video_title,
+                        "url": f"https://youtube.com/watch?v={video.get('id')}",
+                        "embed_url": f"https://youtube.com/embed/{video.get('id')}",
+                        "thumbnail": video.get('thumbnail'),
+                        "description": video.get('description', ''),
+                        "published_at": video_published,
+                        "view_count": video.get('view_count', 0),
+                        "like_count": video.get('like_count', 0),
+                        "duration": video.get('duration'),
+                        "privacy_status": video.get('privacy_status', 'public'),
+                        "channel": {
+                            "id": channel_id,
+                            "name": video.get('channel_title', ''),
+                            "url": f"https://youtube.com/channel/{channel_id}"
+                        }
+                    }
+            
+            logger.info(f"[YouTube Smart Verify] Video not found yet in recent uploads")
+            return None
+            
+        except Exception as e:
+            logger.error(f"[YouTube Smart Verify] Error during verification: {e}")
+            return None
+    
+    async def _wait_for_upload_completion(self, upload_id: str, channel_id: str, max_wait_seconds: int = 60) -> Optional[Dict[str, Any]]:
+        """
+        Wait for upload completion and fetch rich video details.
+        
+        Args:
+            upload_id: The upload ID to monitor
+            channel_id: The channel ID where video was uploaded
+            max_wait_seconds: Maximum time to wait for completion
+            
+        Returns:
+            Dict with success flag and video_details if successful
+        """
+        logger.info(f"[YouTube Upload] Starting upload completion polling for {upload_id}")
+        
+        import asyncio
+        poll_interval = 3  # Poll every 3 seconds
+        max_attempts = max_wait_seconds // poll_interval
+        
+        for attempt in range(max_attempts):
+            try:
+                async with aiohttp.ClientSession() as session:
+                    headers = {
+                        "Authorization": f"Bearer {self.jwt_token}",
+                        "Content-Type": "application/json"
+                    }
+                    
+                    # Check upload status
+                    async with session.get(
+                        f"{self.base_url}/youtube/upload-status/{upload_id}",
+                        headers=headers
+                    ) as response:
+                        if response.status == 200:
+                            status_data = await response.json()
+                            upload_status = status_data.get("status")
+                            video_id = status_data.get("video", {}).get("video_id")
+                            
+                            logger.info(f"[YouTube Upload] Polling attempt {attempt + 1}/{max_attempts}: Status={upload_status}, Video ID={video_id}")
+                            
+                            if upload_status == "completed" and video_id:
+                                # Upload completed! Fetch rich video details
+                                try:
+                                    video_details = await self._fetch_video_details(video_id, channel_id)
+                                    if video_details and video_details.get("success"):
+                                        logger.info(f"[YouTube Upload] Upload completed successfully! Video ID: {video_id}")
+                                        return {
+                                            "success": True,
+                                            "video_details": video_details
+                                        }
+                                except Exception as video_details_error:
+                                    logger.error(f"[YouTube Upload] Failed to fetch video details: {video_details_error}")
+                                    # Return basic success without details
+                                    return {
+                                        "success": True,
+                                        "video_details": {
+                                            "video_id": video_id,
+                                            "title": "Upload Completed",
+                                            "url": f"https://youtube.com/watch?v={video_id}"
+                                        }
+                                    }
+                            
+                            elif upload_status == "failed":
+                                error_message = status_data.get("message", "Upload failed")
+                                logger.error(f"[YouTube Upload] Upload failed: {error_message}")
+                                return {
+                                    "success": False,
+                                    "error": error_message
+                                }
+                            
+                            # Still processing, continue polling
+                            elif upload_status in ["pending", "uploading"]:
+                                logger.debug(f"[YouTube Upload] Still processing... Status: {upload_status}")
+                            
+                        else:
+                            logger.warning(f"[YouTube Upload] Failed to check upload status: HTTP {response.status}")
+                
+                # Wait before next poll
+                if attempt < max_attempts - 1:
+                    await asyncio.sleep(poll_interval)
+                    
+            except Exception as poll_error:
+                logger.error(f"[YouTube Upload] Error during polling attempt {attempt + 1}: {poll_error}")
+                if attempt == max_attempts - 1:
+                    # Last attempt failed
+                    break
+                    
+                await asyncio.sleep(poll_interval)
+        
+        # Timeout reached
+        logger.warning(f"[YouTube Upload] Timeout reached waiting for upload completion. Upload ID: {upload_id}")
+        return None
+    
+    async def _fetch_video_details(self, video_id: str, channel_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Fetch detailed video information from YouTube API.
+        
+        Args:
+            video_id: The YouTube video ID
+            channel_id: The channel ID
+            
+        Returns:
+            Dict with video details or None if failed
+        """
+        try:
+            async with aiohttp.ClientSession() as session:
+                headers = {
+                    "Authorization": f"Bearer {self.jwt_token}",
+                    "Content-Type": "application/json"
+                }
+                
+                # Call the video details API
+                async with session.get(
+                    f"{self.base_url}/youtube/videos/{video_id}/details",
+                    headers=headers,
+                    params={"channel_id": channel_id}
+                ) as response:
+                    if response.status == 200:
+                        video_details = await response.json()
+                        logger.info(f"[YouTube Upload] Successfully fetched video details for {video_id}")
+                        return video_details
+                    else:
+                        error_text = await response.text()
+                        logger.error(f"[YouTube Upload] Failed to fetch video details: HTTP {response.status} - {error_text}")
+                        return None
+                        
+        except Exception as e:
+            logger.error(f"[YouTube Upload] Error fetching video details: {e}")
+            return None

@@ -1,10 +1,10 @@
 import { Metadata } from 'next';
 
 export const metadata: Metadata = {
-  title: 'App Profiles | Kortix Suna',
+  title: 'App Profiles | Rzvi Willow',
   description: 'Manage your connected app integrations',
   openGraph: {
-    title: 'App Profiles | Kortix Suna',
+    title: 'App Profiles | Rzvi Willow',
     description: 'Manage your connected app integrations',
     type: 'website',
   },

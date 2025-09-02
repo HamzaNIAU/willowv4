@@ -420,6 +420,38 @@ async def verify_agent_access(client, agent_id: str, user_id: str) -> dict:
     Raises:
         HTTPException: If the user doesn't have access to the agent or agent doesn't exist
     """
+    # Special handling for suna-default virtual agent
+    if agent_id == "suna-default":
+        from flags.flags import is_enabled
+        from agent.suna_config import SUNA_CONFIG
+        from datetime import datetime, timezone
+        
+        if await is_enabled("default_agent"):
+            # Return a virtual agent data structure
+            now = datetime.now(timezone.utc).isoformat()
+            return {
+                "agent_id": "suna-default",
+                "account_id": user_id,
+                "name": SUNA_CONFIG["name"],
+                "description": SUNA_CONFIG["description"],
+                "system_prompt": SUNA_CONFIG["system_prompt"],
+                "configured_mcps": SUNA_CONFIG["configured_mcps"],
+                "custom_mcps": SUNA_CONFIG["custom_mcps"],
+                "agentpress_tools": SUNA_CONFIG["agentpress_tools"],
+                "is_default": True,
+                "is_public": False,
+                "tags": [],
+                "avatar": SUNA_CONFIG["avatar"],
+                "avatar_color": SUNA_CONFIG["avatar_color"],
+                "profile_image_url": None,
+                "created_at": now,
+                "updated_at": now,
+                "current_version_id": None,
+                "metadata": {"is_suna_default": True, "centrally_managed": True}
+            }
+        else:
+            raise HTTPException(status_code=404, detail="Agent not found or access denied")
+    
     try:
         agent_result = await client.table('agents').select('*').eq('agent_id', agent_id).eq('account_id', user_id).execute()
         

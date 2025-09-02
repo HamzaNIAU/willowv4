@@ -19,6 +19,7 @@ import {
   Linkedin,
   Music,
   Video,
+  User,
 } from 'lucide-react';
 import { useAgentMcpConfigurations, useUpdateAgentMcpToggle } from '@/hooks/react-query/agents/use-agent-mcp-toggle';
 import { toast } from 'sonner';
@@ -155,16 +156,16 @@ export const MCPConnectionsDropdown: React.FC<MCPConnectionsDropdownProps> = ({
       <Button
         ref={buttonRef}
         type="button"
-        variant="ghost"
+        variant="outline"
         size="sm"
         className={cn(
-          "h-8 w-8 rounded-lg p-0 hover:bg-accent",
-          isOpen && "bg-accent"
+          "h-8 w-8 p-2 bg-transparent border border-border rounded-xl text-muted-foreground hover:text-foreground hover:bg-accent/50 flex items-center justify-center",
+          disabled ? "opacity-50 cursor-not-allowed" : ""
         )}
         onClick={() => setIsOpen(!isOpen)}
         disabled={disabled}
       >
-        <Cable className="h-4 w-4" />
+        <User className="h-4 w-4" />
       </Button>
 
       {isOpen && (
@@ -210,7 +211,11 @@ export const MCPConnectionsDropdown: React.FC<MCPConnectionsDropdownProps> = ({
                     {socialMediaByPlatform.youtube && (
                       <>
                         <div className="px-3 py-1.5 text-xs font-medium text-muted-foreground flex items-center gap-1.5">
-                          <Youtube className="h-3 w-3" />
+                          <img 
+                            src="/platforms/youtube.svg" 
+                            alt="YouTube"
+                            className="h-3 w-3"
+                          />
                           YouTube
                         </div>
                         <div className="px-3 pb-2">
@@ -240,10 +245,18 @@ export const MCPConnectionsDropdown: React.FC<MCPConnectionsDropdownProps> = ({
                                           (e.target as HTMLImageElement).nextElementSibling?.classList.remove('hidden');
                                         }}
                                       />
-                                      <Youtube className="h-5 w-5 text-red-600 hidden" />
+                                      <img 
+                                        src="/platforms/youtube.svg" 
+                                        alt="YouTube"
+                                        className="h-5 w-5 hidden"
+                                      />
                                     </>
                                   ) : (
-                                    <Youtube className="h-5 w-5 text-red-600" />
+                                    <img 
+                                      src="/platforms/youtube.svg" 
+                                      alt="YouTube"
+                                      className="h-5 w-5"
+                                    />
                                   )}
                                   <span className="text-sm">{displayName}</span>
                                 </div>

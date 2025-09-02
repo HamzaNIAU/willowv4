@@ -376,11 +376,17 @@ class AgentExecutor:
         if not can_run:
             raise ValueError(f"Billing check failed: {message}")
         
+        # Handle suna-default virtual agent - store NULL instead of "suna-default" to avoid UUID validation
+        effective_agent_id_for_db = None
+        agent_id_value = agent_config.get('agent_id')
+        if agent_id_value and agent_id_value != 'suna-default':
+            effective_agent_id_for_db = agent_id_value
+        
         agent_run = await client.table('agent_runs').insert({
             "thread_id": thread_id,
             "status": "running",
             "started_at": datetime.now(timezone.utc).isoformat(),
-            "agent_id": agent_config.get('agent_id'),
+            "agent_id": effective_agent_id_for_db,
             "agent_version_id": agent_config.get('current_version_id'),
             "metadata": {
                 "model_name": model_name,
@@ -658,11 +664,17 @@ class WorkflowExecutor:
         if not can_run:
             raise ValueError(f"Billing check failed for workflow: {message}")
         
+        # Handle suna-default virtual agent - store NULL instead of "suna-default" to avoid UUID validation
+        effective_agent_id_for_db = None
+        agent_id_value = agent_config.get('agent_id')
+        if agent_id_value and agent_id_value != 'suna-default':
+            effective_agent_id_for_db = agent_id_value
+        
         agent_run = await client.table('agent_runs').insert({
             "thread_id": thread_id,
             "status": "running",
             "started_at": datetime.now(timezone.utc).isoformat(),
-            "agent_id": agent_config.get('agent_id'),
+            "agent_id": effective_agent_id_for_db,
             "agent_version_id": agent_config.get('current_version_id'),
             "metadata": {
                 "model_name": model_name,

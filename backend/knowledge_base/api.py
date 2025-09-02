@@ -79,6 +79,14 @@ async def get_agent_knowledge_base(
         )
     
     """Get all knowledge base entries for an agent"""
+    # Return empty knowledge base for suna-default virtual agent
+    if agent_id == "suna-default":
+        from flags.flags import is_enabled as check_flag
+        if await check_flag("default_agent"):
+            return KnowledgeBaseListResponse(entries=[], total_count=0, total_tokens=0)
+        else:
+            raise HTTPException(status_code=404, detail="Default agent not enabled")
+    
     try:
         client = await db.client
 
@@ -137,6 +145,10 @@ async def create_agent_knowledge_base_entry(
         )
     
     """Create a new knowledge base entry for an agent"""
+    # Block knowledge base creation for suna-default virtual agent
+    if agent_id == "suna-default":
+        raise HTTPException(status_code=403, detail="Cannot modify knowledge base for the default agent")
+    
     try:
         client = await db.client
         
@@ -192,6 +204,10 @@ async def upload_file_to_agent_kb(
         )
     
     """Upload and process a file for agent knowledge base"""
+    # Block file uploads for suna-default virtual agent
+    if agent_id == "suna-default":
+        raise HTTPException(status_code=403, detail="Cannot upload files to the default agent")
+    
     try:
         client = await db.client
         
@@ -416,6 +432,14 @@ async def get_agent_processing_jobs(
         )
     
     """Get processing jobs for an agent"""
+    # Return empty list for suna-default virtual agent
+    if agent_id == "suna-default":
+        from flags.flags import is_enabled as check_flag
+        if await check_flag("default_agent"):
+            return []
+        else:
+            raise HTTPException(status_code=404, detail="Default agent not enabled")
+    
     try:
         client = await db.client
 

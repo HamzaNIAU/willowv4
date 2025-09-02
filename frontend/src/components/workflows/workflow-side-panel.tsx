@@ -22,6 +22,8 @@ import { toast } from 'sonner';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { composioApi } from '@/hooks/react-query/composio/utils';
 import { backendApi } from '@/lib/api-client';
+import { isValidAgentId } from '@/lib/utils/agent-validation';
+import { useFeatureFlag } from '@/lib/feature-flags';
 
 interface StepType {
     id: string;
@@ -78,7 +80,13 @@ export function WorkflowSidePanel({
     const [showComposioRegistry, setShowComposioRegistry] = useState(false);
     const [showCustomMCPDialog, setShowCustomMCPDialog] = useState(false);
     const queryClient = useQueryClient();
-    const { data: agent } = useAgent(agentId || '');
+    const { enabled: customAgentsEnabled } = useFeatureFlag('custom_agents');
+    
+    // Validate agent ID before fetching
+    const shouldFetchAgent = agentId && isValidAgentId(agentId) && (
+        agentId === 'suna-default' || customAgentsEnabled
+    );
+    const { data: agent } = useAgent(shouldFetchAgent ? agentId : '');
     const updateAgentMutation = useUpdateAgent();
 
     const isMobile = useIsMobile();

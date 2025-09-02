@@ -46,14 +46,22 @@ export default function AgentsPage() {
   const { user } = useAuth();
   const { enabled: customAgentsEnabled, loading: agentsFlagLoading } = useFeatureFlag("custom_agents");
   const { enabled: agentMarketplaceEnabled, loading: marketplaceFlagLoading } = useFeatureFlag("agent_marketplace");
+  const { enabled: hideAgentCreation, loading: hideAgentCreationLoading } = useFeatureFlag("hide_agent_creation");
   const router = useRouter();
-  const flagLoading = agentsFlagLoading || marketplaceFlagLoading;
+  
+  // Redirect to dashboard if custom agents is disabled
+  useEffect(() => {
+    if (!agentsFlagLoading && !customAgentsEnabled) {
+      router.replace('/dashboard');
+    }
+  }, [agentsFlagLoading, customAgentsEnabled, router]);
+  const flagLoading = agentsFlagLoading || marketplaceFlagLoading || hideAgentCreationLoading;
 
   useEffect(() => {
-    if (!flagLoading && !customAgentsEnabled) {
+    if (!flagLoading && (!customAgentsEnabled || hideAgentCreation)) {
       router.replace("/dashboard");
     }
-  }, [flagLoading, customAgentsEnabled, router]);
+  }, [flagLoading, customAgentsEnabled, hideAgentCreation, router]);
 
   const [editDialogOpen, setEditDialogOpen] = useState(false);
   const [editingAgentId, setEditingAgentId] = useState<string | null>(null);

@@ -8,6 +8,7 @@ import {
     DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import Image from 'next/image'
+import { WillowLogo } from '@/components/sidebar/willow-logo'
 
 const ChatDropdown = () => {
     const [isOpen, setIsOpen] = useState(false)
@@ -34,8 +35,8 @@ const ChatDropdown = () => {
                     }}
                 >
                     <div className="flex items-center gap-2">
-                        <Image src="/kortix-symbol.svg" alt="Suna" width={16} height={16} className="h-4 w-4 dark:invert" />
-                        <span>Suna</span>
+                        <WillowLogo size={16} />
+                        <span>Willow</span>
                         <ChevronDown size={14} className="opacity-50" />
                     </div>
                 </Button>

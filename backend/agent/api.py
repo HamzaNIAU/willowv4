@@ -202,6 +202,40 @@ def initialize(
 
     logger.debug(f"Initialized agent API with instance ID: {instance_id}")
 
+async def get_suna_default_agent_data(account_id: str) -> tuple[dict, dict]:
+    """Get virtual suna-default agent data and config.
+    Returns (agent_data, agent_config) tuple.
+    """
+    from agent.suna_config import SUNA_CONFIG
+    
+    # Create virtual agent data
+    agent_data = {
+        "agent_id": "suna-default",
+        "account_id": account_id,
+        "name": SUNA_CONFIG["name"],
+        "description": SUNA_CONFIG["description"],
+        "avatar": SUNA_CONFIG["avatar"],
+        "avatar_color": SUNA_CONFIG["avatar_color"],
+        "current_version_id": None,  # No version for virtual agent
+        "metadata": {"is_suna_default": True}
+    }
+    
+    # Create virtual agent config
+    agent_config = {
+        "agent_id": "suna-default",
+        "name": SUNA_CONFIG["name"],
+        "description": SUNA_CONFIG["description"],
+        "system_prompt": SUNA_CONFIG["system_prompt"],
+        "model": SUNA_CONFIG["model"],
+        "agentpress_tools": SUNA_CONFIG["agentpress_tools"],
+        "configured_mcps": SUNA_CONFIG["configured_mcps"],
+        "custom_mcps": SUNA_CONFIG["custom_mcps"],
+        "is_suna_default": True,
+        "version_name": "v1"
+    }
+    
+    return agent_data, agent_config
+
 async def cleanup():
     """Clean up resources and stop running agents on shutdown."""
     logger.debug("Starting cleanup of agent API resources")
@@ -373,36 +407,46 @@ async def start_agent(
 
     if effective_agent_id:
         logger.debug(f"[AGENT LOAD] Querying for agent: {effective_agent_id}")
-        # Get agent
-        agent_result = await client.table('agents').select('*').eq('agent_id', effective_agent_id).eq('account_id', account_id).execute()
-        logger.debug(f"[AGENT LOAD] Query result: found {len(agent_result.data) if agent_result.data else 0} agents")
         
-        if not agent_result.data:
-            if body.agent_id:
-                raise HTTPException(status_code=404, detail="Agent not found or access denied")
+        # Special handling for suna-default virtual agent
+        if effective_agent_id == "suna-default":
+            if await is_enabled("default_agent"):
+                logger.debug(f"[AGENT LOAD] Using suna-default virtual agent")
+                agent_data, agent_config = await get_suna_default_agent_data(account_id)
+                version_data = None  # No version for virtual agent
             else:
-                logger.warning(f"Stored agent_id {effective_agent_id} not found, falling back to default")
-                effective_agent_id = None
+                raise HTTPException(status_code=404, detail="Default agent is not enabled")
         else:
-            agent_data = agent_result.data[0]
-            version_data = None
-            if agent_data.get('current_version_id'):
-                try:
-                    version_service = await _get_version_service()
-                    version_obj = await version_service.get_version(
-                        agent_id=effective_agent_id,
-                        version_id=agent_data['current_version_id'],
-                        user_id=user_id
-                    )
-                    version_data = version_obj.to_dict()
-                    logger.debug(f"[AGENT LOAD] Got version data from version manager: {version_data.get('version_name')}")
-                except Exception as e:
-                    logger.warning(f"[AGENT LOAD] Failed to get version data: {e}")
+            # Get agent from database for regular agents
+            agent_result = await client.table('agents').select('*').eq('agent_id', effective_agent_id).eq('account_id', account_id).execute()
+            logger.debug(f"[AGENT LOAD] Query result: found {len(agent_result.data) if agent_result.data else 0} agents")
             
-            logger.debug(f"[AGENT LOAD] About to call extract_agent_config with agent_data keys: {list(agent_data.keys())}")
-            logger.debug(f"[AGENT LOAD] version_data type: {type(version_data)}, has data: {version_data is not None}")
-            
-            agent_config = extract_agent_config(agent_data, version_data)
+            if not agent_result.data:
+                if body.agent_id:
+                    raise HTTPException(status_code=404, detail="Agent not found or access denied")
+                else:
+                    logger.warning(f"Stored agent_id {effective_agent_id} not found, falling back to default")
+                    effective_agent_id = None
+            else:
+                agent_data = agent_result.data[0]
+                version_data = None
+                if agent_data.get('current_version_id'):
+                    try:
+                        version_service = await _get_version_service()
+                        version_obj = await version_service.get_version(
+                            agent_id=effective_agent_id,
+                            version_id=agent_data['current_version_id'],
+                            user_id=user_id
+                        )
+                        version_data = version_obj.to_dict()
+                        logger.debug(f"[AGENT LOAD] Got version data from version manager: {version_data.get('version_name')}")
+                    except Exception as e:
+                        logger.warning(f"[AGENT LOAD] Failed to get version data: {e}")
+                
+                logger.debug(f"[AGENT LOAD] About to call extract_agent_config with agent_data keys: {list(agent_data.keys())}")
+                logger.debug(f"[AGENT LOAD] version_data type: {type(version_data)}, has data: {version_data is not None}")
+                
+                agent_config = await extract_agent_config(agent_data, version_data)
             
             if version_data:
                 logger.debug(f"Using agent {agent_config['name']} ({effective_agent_id}) version {agent_config.get('version_name', 'v1')}")
@@ -437,7 +481,7 @@ async def start_agent(
             
             logger.debug(f"[AGENT LOAD] About to call extract_agent_config for DEFAULT agent with version data: {version_data is not None}")
             
-            agent_config = extract_agent_config(agent_data, version_data)
+            agent_config = await extract_agent_config(agent_data, version_data)
             
             if version_data:
                 logger.debug(f"Using default agent: {agent_config['name']} ({agent_config['agent_id']}) version {agent_config.get('version_name', 'v1')}")
@@ -487,11 +531,18 @@ async def start_agent(
     else:
         logger.debug(f"Using default model: {effective_model}")
     
+    # Handle suna-default virtual agent - store NULL instead of "suna-default" to avoid UUID validation
+    effective_agent_id_for_db = None
+    if agent_config:
+        agent_id_value = agent_config.get('agent_id')
+        if agent_id_value and agent_id_value != 'suna-default':
+            effective_agent_id_for_db = agent_id_value
+    
     agent_run = await client.table('agent_runs').insert({
         "thread_id": thread_id,
         "status": "running",
         "started_at": datetime.now(timezone.utc).isoformat(),
-        "agent_id": agent_config.get('agent_id') if agent_config else None,
+        "agent_id": effective_agent_id_for_db,
         "agent_version_id": agent_config.get('current_version_id') if agent_config else None,
         "metadata": {
             "model_name": effective_model,
@@ -513,6 +564,21 @@ async def start_agent(
         await redis.set(instance_key, "running", ex=redis.REDIS_KEY_TTL)
     except Exception as e:
         logger.warning(f"Failed to register agent run in Redis ({instance_key}): {str(e)}")
+
+    # Inject YouTube channels from cache into agent config
+    if agent_config and not is_agent_builder:
+        try:
+            from services.youtube_channel_cache import YouTubeChannelCacheService
+            cache_service = YouTubeChannelCacheService(db)
+            youtube_channels = await cache_service.get_enabled_channels(user_id, agent_config.get('agent_id', ''))
+            agent_config['youtube_channels'] = youtube_channels
+            if youtube_channels:
+                logger.info(f"Injected {len(youtube_channels)} YouTube channels into agent config for agent {agent_config.get('agent_id')}")
+            else:
+                logger.debug(f"No YouTube channels enabled for agent {agent_config.get('agent_id')}")
+        except Exception as e:
+            logger.warning(f"Failed to inject YouTube channels into agent config: {e}")
+            agent_config['youtube_channels'] = []
 
     request_id = structlog.contextvars.get_contextvars().get('request_id')
 
@@ -615,73 +681,91 @@ async def get_thread_agent(thread_id: str, user_id: str = Depends(get_current_us
             }
         
         # Fetch the agent details
-        agent_result = await client.table('agents').select('*').eq('agent_id', effective_agent_id).eq('account_id', account_id).execute()
+        # Special handling for suna-default virtual agent
+        if effective_agent_id == "suna-default":
+            if await is_enabled("default_agent"):
+                logger.debug(f"[GET THREAD AGENT] Using suna-default virtual agent")
+                agent_data, agent_config = await get_suna_default_agent_data(account_id)
+                version_data = None  # No version for virtual agent
+            else:
+                return {
+                    "agent": None,
+                    "source": "missing",
+                    "message": "Default agent is not enabled"
+                }
+        else:
+            agent_result = await client.table('agents').select('*').eq('agent_id', effective_agent_id).eq('account_id', account_id).execute()
+            
+            if not agent_result.data:
+                # Agent was deleted or doesn't exist
+                return {
+                    "agent": None,
+                    "source": "missing",
+                    "message": f"Agent {effective_agent_id} not found or was deleted. You can select a different agent."
+                }
+            
+            agent_data = agent_result.data[0]
         
-        if not agent_result.data:
-            # Agent was deleted or doesn't exist
-            return {
-                "agent": None,
-                "source": "missing",
-                "message": f"Agent {effective_agent_id} not found or was deleted. You can select a different agent."
-            }
-        
-        agent_data = agent_result.data[0]
-        
-        # Use versioning system to get current version data
-        version_data = None
-        current_version = None
-        if agent_data.get('current_version_id'):
-            try:
-                version_service = await _get_version_service()
-                current_version_obj = await version_service.get_version(
-                    agent_id=effective_agent_id,
-                    version_id=agent_data['current_version_id'],
-                    user_id=user_id
-                )
-                current_version_data = current_version_obj.to_dict()
-                version_data = current_version_data
-                
-                # Create AgentVersionResponse from version data
-                current_version = AgentVersionResponse(
-                    version_id=current_version_data['version_id'],
-                    agent_id=current_version_data['agent_id'],
-                    version_number=current_version_data['version_number'],
-                    version_name=current_version_data['version_name'],
-                    system_prompt=current_version_data['system_prompt'],
-                    model=current_version_data.get('model'),
-                    configured_mcps=current_version_data.get('configured_mcps', []),
-                    custom_mcps=current_version_data.get('custom_mcps', []),
-                    agentpress_tools=current_version_data.get('agentpress_tools', {}),
-                    is_active=current_version_data.get('is_active', True),
-                    created_at=current_version_data['created_at'],
-                    updated_at=current_version_data.get('updated_at', current_version_data['created_at']),
-                    created_by=current_version_data.get('created_by')
-                )
-                
-                logger.debug(f"Using agent {agent_data['name']} version {current_version_data.get('version_name', 'v1')}")
-            except Exception as e:
-                logger.warning(f"Failed to get version data for agent {effective_agent_id}: {e}")
-        
-        version_data = None
-        if current_version:
-            version_data = {
-                'version_id': current_version.version_id,
-                'agent_id': current_version.agent_id,
-                'version_number': current_version.version_number,
-                'version_name': current_version.version_name,
-                'system_prompt': current_version.system_prompt,
-                'model': current_version.model,
-                'configured_mcps': current_version.configured_mcps,
-                'custom_mcps': current_version.custom_mcps,
-                'agentpress_tools': current_version.agentpress_tools,
-                'is_active': current_version.is_active,
-                'created_at': current_version.created_at,
-                'updated_at': current_version.updated_at,
-                'created_by': current_version.created_by
-            }
-        
-        from agent.config_helper import extract_agent_config
-        agent_config = extract_agent_config(agent_data, version_data)
+        # Use versioning system to get current version data (skip for suna-default)
+        if effective_agent_id != "suna-default":
+            version_data = None
+            current_version = None
+            if agent_data.get('current_version_id'):
+                try:
+                    version_service = await _get_version_service()
+                    current_version_obj = await version_service.get_version(
+                        agent_id=effective_agent_id,
+                        version_id=agent_data['current_version_id'],
+                        user_id=user_id
+                    )
+                    current_version_data = current_version_obj.to_dict()
+                    version_data = current_version_data
+                    
+                    # Create AgentVersionResponse from version data
+                    current_version = AgentVersionResponse(
+                        version_id=current_version_data['version_id'],
+                        agent_id=current_version_data['agent_id'],
+                        version_number=current_version_data['version_number'],
+                        version_name=current_version_data['version_name'],
+                        system_prompt=current_version_data['system_prompt'],
+                        model=current_version_data.get('model'),
+                        configured_mcps=current_version_data.get('configured_mcps', []),
+                        custom_mcps=current_version_data.get('custom_mcps', []),
+                        agentpress_tools=current_version_data.get('agentpress_tools', {}),
+                        is_active=current_version_data.get('is_active', True),
+                        created_at=current_version_data['created_at'],
+                        updated_at=current_version_data.get('updated_at', current_version_data['created_at']),
+                        created_by=current_version_data.get('created_by')
+                    )
+                    
+                    logger.debug(f"Using agent {agent_data['name']} version {current_version_data.get('version_name', 'v1')}")
+                except Exception as e:
+                    logger.warning(f"Failed to get version data for agent {effective_agent_id}: {e}")
+            
+            version_data = None
+            if current_version:
+                version_data = {
+                    'version_id': current_version.version_id,
+                    'agent_id': current_version.agent_id,
+                    'version_number': current_version.version_number,
+                    'version_name': current_version.version_name,
+                    'system_prompt': current_version.system_prompt,
+                    'model': current_version.model,
+                    'configured_mcps': current_version.configured_mcps,
+                    'custom_mcps': current_version.custom_mcps,
+                    'agentpress_tools': current_version.agentpress_tools,
+                    'is_active': current_version.is_active,
+                    'created_at': current_version.created_at,
+                    'updated_at': current_version.updated_at,
+                    'created_by': current_version.created_by
+                }
+            
+            from agent.config_helper import extract_agent_config
+            agent_config = await extract_agent_config(agent_data, version_data)
+        else:
+            # For suna-default, we already have agent_config from get_suna_default_agent_data
+            current_version = None
+            version_data = None
         
         system_prompt = agent_config['system_prompt']
         configured_mcps = agent_config['configured_mcps']
@@ -1011,34 +1095,45 @@ async def initiate_agent_with_files(
     
     if agent_id:
         logger.debug(f"[AGENT INITIATE] Querying for specific agent: {agent_id}")
-        # Get agent
-        agent_result = await client.table('agents').select('*').eq('agent_id', agent_id).eq('account_id', account_id).execute()
-        logger.debug(f"[AGENT INITIATE] Query result: found {len(agent_result.data) if agent_result.data else 0} agents")
         
-        if not agent_result.data:
-            raise HTTPException(status_code=404, detail="Agent not found or access denied")
-        
-        agent_data = agent_result.data[0]
-        
-        # Use versioning system to get current version
-        version_data = None
-        if agent_data.get('current_version_id'):
-            try:
-                version_service = await _get_version_service()
-                version_obj = await version_service.get_version(
-                    agent_id=agent_id,
-                    version_id=agent_data['current_version_id'],
-                    user_id=user_id
-                )
-                version_data = version_obj.to_dict()
-                logger.debug(f"[AGENT INITIATE] Got version data from version manager: {version_data.get('version_name')}")
-                logger.debug(f"[AGENT INITIATE] Version data: {version_data}")
-            except Exception as e:
-                logger.warning(f"[AGENT INITIATE] Failed to get version data: {e}")
-        
-        logger.debug(f"[AGENT INITIATE] About to call extract_agent_config with version data: {version_data is not None}")
-        
-        agent_config = extract_agent_config(agent_data, version_data)
+        # Special handling for suna-default virtual agent
+        if agent_id == "suna-default":
+            if await is_enabled("default_agent"):
+                logger.debug(f"[AGENT INITIATE] Using suna-default virtual agent config")
+                agent_data, agent_config = await get_suna_default_agent_data(account_id)
+                version_data = None  # No version for virtual agent
+                logger.debug(f"[AGENT INITIATE] Created virtual suna-default agent config")
+            else:
+                raise HTTPException(status_code=404, detail="Default agent is not enabled")
+        else:
+            # Get agent from database for regular agents
+            agent_result = await client.table('agents').select('*').eq('agent_id', agent_id).eq('account_id', account_id).execute()
+            logger.debug(f"[AGENT INITIATE] Query result: found {len(agent_result.data) if agent_result.data else 0} agents")
+            
+            if not agent_result.data:
+                raise HTTPException(status_code=404, detail="Agent not found or access denied")
+            
+            agent_data = agent_result.data[0]
+            
+            # Use versioning system to get current version
+            version_data = None
+            if agent_data.get('current_version_id'):
+                try:
+                    version_service = await _get_version_service()
+                    version_obj = await version_service.get_version(
+                        agent_id=agent_id,
+                        version_id=agent_data['current_version_id'],
+                        user_id=user_id
+                    )
+                    version_data = version_obj.to_dict()
+                    logger.debug(f"[AGENT INITIATE] Got version data from version manager: {version_data.get('version_name')}")
+                    logger.debug(f"[AGENT INITIATE] Version data: {version_data}")
+                except Exception as e:
+                    logger.warning(f"[AGENT INITIATE] Failed to get version data: {e}")
+            
+            logger.debug(f"[AGENT INITIATE] About to call extract_agent_config with version data: {version_data is not None}")
+            
+            agent_config = await extract_agent_config(agent_data, version_data)
         
         if version_data:
             logger.debug(f"Using custom agent: {agent_config['name']} ({agent_id}) version {agent_config.get('version_name', 'v1')}")
@@ -1070,7 +1165,7 @@ async def initiate_agent_with_files(
             
             logger.debug(f"[AGENT INITIATE] About to call extract_agent_config for DEFAULT agent with version data: {version_data is not None}")
             
-            agent_config = extract_agent_config(agent_data, version_data)
+            agent_config = await extract_agent_config(agent_data, version_data)
             
             if version_data:
                 logger.debug(f"Using default agent: {agent_config['name']} ({agent_config['agent_id']}) version {agent_config.get('version_name', 'v1')}")
@@ -1287,10 +1382,17 @@ async def initiate_agent_with_files(
         else:
             logger.debug(f"Using default model: {effective_model}")
 
+        # Handle suna-default virtual agent - store NULL instead of "suna-default" to avoid UUID validation
+        effective_agent_id_for_db = None
+        if agent_config:
+            agent_id_value = agent_config.get('agent_id')
+            if agent_id_value and agent_id_value != 'suna-default':
+                effective_agent_id_for_db = agent_id_value
+        
         agent_run = await client.table('agent_runs').insert({
             "thread_id": thread_id, "status": "running",
             "started_at": datetime.now(timezone.utc).isoformat(),
-            "agent_id": agent_config.get('agent_id') if agent_config else None,
+            "agent_id": effective_agent_id_for_db,
             "agent_version_id": agent_config.get('current_version_id') if agent_config else None,
             "metadata": {
                 "model_name": effective_model,
@@ -1312,6 +1414,25 @@ async def initiate_agent_with_files(
             await redis.set(instance_key, "running", ex=redis.REDIS_KEY_TTL)
         except Exception as e:
             logger.warning(f"Failed to register agent run in Redis ({instance_key}): {str(e)}")
+
+        # Inject YouTube channels from cache into agent config
+        if agent_config and not is_agent_builder:
+            agent_id = agent_config.get('agent_id', '')
+            logger.debug(f"Cache injection: Attempting to inject channels for agent_id: '{agent_id}', user_id: '{user_id}'")
+            try:
+                from services.youtube_channel_cache import YouTubeChannelCacheService
+                cache_service = YouTubeChannelCacheService(db)
+                youtube_channels = await cache_service.get_enabled_channels(user_id, agent_id)
+                agent_config['youtube_channels'] = youtube_channels
+                if youtube_channels:
+                    logger.info(f"✅ Cache injection: Successfully injected {len(youtube_channels)} YouTube channels into agent config for agent {agent_id}")
+                    for channel in youtube_channels:
+                        logger.debug(f"   - Injected channel: {channel.get('name')} ({channel.get('id')})")
+                else:
+                    logger.info(f"⚠️ Cache injection: No YouTube channels enabled for agent {agent_id}")
+            except Exception as e:
+                logger.warning(f"❌ Cache injection: Failed to inject YouTube channels into agent config: {e}")
+                agent_config['youtube_channels'] = []
 
         request_id = structlog.contextvars.get_contextvars().get('request_id')
 
@@ -1463,7 +1584,7 @@ async def get_agents(
                 # Get version data if available and extract configuration
                 version_data = agent_version_map.get(agent['agent_id'])
                 from agent.config_helper import extract_agent_config
-                agent_config = extract_agent_config(agent, version_data)
+                agent_config = await extract_agent_config(agent, version_data)
                 
                 configured_mcps = agent_config['configured_mcps']
                 agentpress_tools = agent_config['agentpress_tools']
@@ -1560,7 +1681,7 @@ async def get_agents(
             
             # Extract configuration using the unified config approach
             from agent.config_helper import extract_agent_config
-            agent_config = extract_agent_config(agent, version_dict)
+            agent_config = await extract_agent_config(agent, version_dict)
             
             system_prompt = agent_config['system_prompt']
             configured_mcps = agent_config['configured_mcps']
@@ -1592,6 +1713,43 @@ async def get_agents(
         
         total_pages = (total_count + limit - 1) // limit
         
+        # Add Suna default agent if default_agent feature is enabled
+        if await is_enabled("default_agent") and page == 1:
+            from agent.suna_config import SUNA_CONFIG
+            import uuid
+            
+            # Create a virtual Suna agent that appears first
+            from datetime import datetime, timezone
+            now = datetime.now(timezone.utc).isoformat()
+            
+            suna_agent = AgentResponse(
+                agent_id="suna-default",  # Special ID for the default Suna agent
+                account_id=user_id,
+                name=SUNA_CONFIG["name"],
+                description=SUNA_CONFIG["description"],
+                system_prompt=SUNA_CONFIG["system_prompt"],
+                configured_mcps=SUNA_CONFIG["configured_mcps"],
+                custom_mcps=SUNA_CONFIG["custom_mcps"],
+                agentpress_tools=SUNA_CONFIG["agentpress_tools"],
+                is_default=True,
+                is_public=False,
+                tags=[],
+                avatar=SUNA_CONFIG["avatar"],
+                avatar_color=SUNA_CONFIG["avatar_color"],
+                profile_image_url=None,
+                created_at=now,
+                updated_at=now,
+                current_version_id=None,
+                version_count=1,
+                current_version=None,
+                metadata={"is_suna_default": True, "centrally_managed": True}
+            )
+            
+            # Insert Suna at the beginning of the agent list
+            agent_list.insert(0, suna_agent)
+            total_count += 1  # Increment total count to include Suna
+            total_pages = (total_count + limit - 1) // limit
+        
         logger.debug(f"Found {len(agent_list)} agents for user: {user_id} (page {page}/{total_pages})")
         return {
             "agents": agent_list,
@@ -1610,13 +1768,62 @@ async def get_agents(
 @router.get("/agents/{agent_id}", response_model=AgentResponse)
 async def get_agent(agent_id: str, user_id: str = Depends(get_current_user_id_from_jwt)):
     """Get a specific agent by ID with current version information. Only the owner can access non-public agents."""
+    logger.debug(f"Fetching agent {agent_id} for user: {user_id}")
+    
+    # Handle special Suna default agent FIRST (bypasses custom_agents check)
+    if agent_id == "suna-default" and await is_enabled("default_agent"):
+        from agent.suna_config import SUNA_CONFIG
+        from datetime import datetime, timezone
+        from services import redis
+        import json
+        
+        now = datetime.now(timezone.utc).isoformat()
+        
+        # Get user-specific configuration from Redis
+        redis_client = await redis.get_client()
+        config_key = f"suna_default_config:{user_id}"
+        user_config_str = await redis_client.get(config_key)
+        
+        if user_config_str:
+            user_config = json.loads(user_config_str)
+        else:
+            user_config = {}
+        
+        # Merge user config with base Suna config
+        merged_configured_mcps = user_config.get("configured_mcps", SUNA_CONFIG["configured_mcps"])
+        merged_custom_mcps = user_config.get("custom_mcps", SUNA_CONFIG["custom_mcps"])
+        merged_model = user_config.get("model", SUNA_CONFIG.get("model"))
+        
+        return AgentResponse(
+            agent_id="suna-default",
+            account_id=user_id,
+            name=SUNA_CONFIG["name"],
+            description=SUNA_CONFIG["description"],
+            system_prompt=SUNA_CONFIG["system_prompt"],
+            configured_mcps=merged_configured_mcps,
+            custom_mcps=merged_custom_mcps,
+            agentpress_tools=SUNA_CONFIG["agentpress_tools"],
+            is_default=True,
+            is_public=False,
+            tags=[],
+            avatar=SUNA_CONFIG["avatar"],
+            avatar_color=SUNA_CONFIG["avatar_color"],
+            profile_image_url=None,
+            created_at=now,
+            updated_at=now,
+            current_version_id=None,
+            version_count=1,
+            current_version=None,
+            metadata={"is_suna_default": True, "centrally_managed": True}
+        )
+    
+    # Check if custom agents are enabled for non-suna agents
     if not await is_enabled("custom_agents"):
         raise HTTPException(
             status_code=403, 
             detail="Custom agents currently disabled. This feature is not available at the moment."
         )
     
-    logger.debug(f"Fetching agent {agent_id} for user: {user_id}")
     client = await db.client
     
     try:
@@ -1686,7 +1893,7 @@ async def get_agent(agent_id: str, user_id: str = Depends(get_current_user_id_fr
             }
         
         from agent.config_helper import extract_agent_config
-        agent_config = extract_agent_config(agent_data, version_data)
+        agent_config = await extract_agent_config(agent_data, version_data)
         
         system_prompt = agent_config['system_prompt']
         configured_mcps = agent_config['configured_mcps']
@@ -1745,7 +1952,7 @@ async def export_agent(agent_id: str, user_id: str = Depends(get_current_user_id
                 current_version = version_result.data[0]
 
         from agent.config_helper import extract_agent_config
-        config = extract_agent_config(agent, current_version)
+        config = await extract_agent_config(agent, current_version)
         
         from templates.template_service import TemplateService
         template_service = TemplateService(db)
@@ -2065,12 +2272,86 @@ async def update_agent(
     agent_data: AgentUpdateRequest,
     user_id: str = Depends(get_current_user_id_from_jwt)
 ):
+    logger.debug(f"Updating agent {agent_id} for user: {user_id}")
+    
+    # Handle suna-default virtual agent updates FIRST
+    if agent_id == "suna-default" and await is_enabled("default_agent"):
+        from agent.suna_config import SUNA_CONFIG
+        from datetime import datetime, timezone
+        
+        # Only allow updating MCP configurations and model for suna-default
+        allowed_updates = {
+            "configured_mcps": agent_data.configured_mcps,
+            "custom_mcps": agent_data.custom_mcps,
+            "model": agent_data.model
+        }
+        
+        # Block restricted updates
+        if agent_data.name is not None and agent_data.name != SUNA_CONFIG["name"]:
+            raise HTTPException(status_code=403, detail="Suna's name cannot be modified.")
+        if agent_data.description is not None and agent_data.description != SUNA_CONFIG["description"]:
+            raise HTTPException(status_code=403, detail="Suna's description cannot be modified.")
+        if agent_data.system_prompt is not None:
+            raise HTTPException(status_code=403, detail="Suna's system prompt cannot be modified. This is managed centrally to ensure optimal performance.")
+        if agent_data.agentpress_tools is not None:
+            raise HTTPException(status_code=403, detail="Suna's default tools cannot be modified. These tools are optimized for Suna's capabilities.")
+        
+        # Store user-specific configuration in Redis
+        from services import redis
+        redis_client = await redis.get_client()
+        config_key = f"suna_default_config:{user_id}"
+        
+        # Get existing config or create new
+        existing_config_str = await redis_client.get(config_key)
+        if existing_config_str:
+            import json
+            existing_config = json.loads(existing_config_str)
+        else:
+            existing_config = {}
+        
+        # Update only allowed fields
+        if agent_data.configured_mcps is not None:
+            existing_config["configured_mcps"] = agent_data.configured_mcps
+        if agent_data.custom_mcps is not None:
+            existing_config["custom_mcps"] = agent_data.custom_mcps
+        if agent_data.model is not None:
+            existing_config["model"] = agent_data.model
+        
+        # Save updated config
+        import json
+        await redis_client.set(config_key, json.dumps(existing_config))
+        
+        # Return the merged configuration
+        now = datetime.now(timezone.utc).isoformat()
+        return AgentResponse(
+            agent_id="suna-default",
+            account_id=user_id,
+            name=SUNA_CONFIG["name"],
+            description=SUNA_CONFIG["description"],
+            system_prompt=SUNA_CONFIG["system_prompt"],
+            configured_mcps=existing_config.get("configured_mcps", SUNA_CONFIG["configured_mcps"]),
+            custom_mcps=existing_config.get("custom_mcps", SUNA_CONFIG["custom_mcps"]),
+            agentpress_tools=SUNA_CONFIG["agentpress_tools"],
+            is_default=True,
+            is_public=False,
+            tags=[],
+            avatar=SUNA_CONFIG["avatar"],
+            avatar_color=SUNA_CONFIG["avatar_color"],
+            profile_image_url=None,
+            created_at=now,
+            updated_at=now,
+            current_version_id=None,
+            version_count=1,
+            current_version=None,
+            metadata={"is_suna_default": True, "centrally_managed": True}
+        )
+    
+    # Check custom agents for non-suna-default agents
     if not await is_enabled("custom_agents"):
         raise HTTPException(
             status_code=403, 
             detail="Custom agent currently disabled. This feature is not available at the moment."
         )
-    logger.debug(f"Updating agent {agent_id} for user: {user_id}")
     client = await db.client
     
     try:
@@ -2377,7 +2658,7 @@ async def update_agent(
             }
         
         from agent.config_helper import extract_agent_config
-        agent_config = extract_agent_config(agent, version_data)
+        agent_config = await extract_agent_config(agent, version_data)
         
         system_prompt = agent_config['system_prompt']
         configured_mcps = agent_config['configured_mcps']
@@ -2971,7 +3252,7 @@ async def get_agent_tools(
             logger.warning(f"Failed to fetch version data for tools endpoint: {e}")
     
     from agent.config_helper import extract_agent_config
-    agent_config = extract_agent_config(agent, version_data)
+    agent_config = await extract_agent_config(agent, version_data)
     
     agentpress_tools_config = agent_config['agentpress_tools']
     configured_mcps = agent_config['configured_mcps'] 
@@ -3671,6 +3952,12 @@ async def update_agent_mcp_toggle(
 ):
     """Update toggle state for a specific MCP"""
     try:
+        # Special handling for suna-default virtual agent
+        if agent_id == "suna-default":
+            # Return success without actually storing (virtual agent doesn't persist toggles)
+            logger.info(f"Skipping toggle persistence for virtual agent suna-default")
+            return {"success": True, "mcp_id": request.mcp_id, "enabled": request.enabled}
+        
         toggle_service = MCPToggleService(db)
         success = await toggle_service.set_toggle(
             agent_id=agent_id,

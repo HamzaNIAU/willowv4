@@ -171,7 +171,20 @@ export const getAgentWorkflows = async (agentId: string): Promise<AgentWorkflow[
     const workflows = await response.json();
     return workflows;
   } catch (err) {
-    console.error('Error fetching workflows:', err);
+    // Throttle error logging when custom agents is disabled
+    if (err instanceof Error && err.message === 'Custom agents is not enabled') {
+      // Only log once every 30 seconds to avoid spam
+      const lastLoggedKey = 'workflows_error_logged';
+      const lastLogged = parseInt(localStorage.getItem(lastLoggedKey) || '0');
+      const now = Date.now();
+      
+      if (now - lastLogged > 30000) { // 30 seconds
+        console.warn('Custom agents is disabled - workflow API calls will fail silently');
+        localStorage.setItem(lastLoggedKey, now.toString());
+      }
+    } else {
+      console.error('Error fetching workflows:', err);
+    }
     throw err;
   }
 };

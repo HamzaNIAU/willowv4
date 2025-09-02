@@ -2,6 +2,8 @@ import { useMemo, useEffect } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { useAgent } from '@/hooks/react-query/agents/use-agents';
 import { useAgentVersion, useVersionStore } from '@/lib/versioning';
+import { isValidAgentId } from '@/lib/utils/agent-validation';
+import { useFeatureFlag } from '@/lib/feature-flags';
 
 interface NormalizedMCP {
   name: string;
@@ -114,13 +116,22 @@ function normalizeVersionData(version: any): NormalizedVersionData | null {
 export function useAgentVersionData({ agentId }: UseAgentVersionDataProps): UseAgentVersionDataReturn {
   const searchParams = useSearchParams();
   const versionParam = searchParams.get('version');
+  const { enabled: customAgentsEnabled } = useFeatureFlag('custom_agents');
   
-  const { data: agent, isLoading: agentLoading, error: agentError } = useAgent(agentId);
+  // Validate agent ID before making API calls
+  const isValidId = isValidAgentId(agentId);
+  const shouldFetchAgent = isValidId && (
+    agentId === 'suna-default' || customAgentsEnabled
+  );
+  
+  const { data: agent, isLoading: agentLoading, error: agentError } = useAgent(
+    shouldFetchAgent ? agentId : ''
+  );
   const shouldLoadVersion = versionParam || agent?.current_version_id;
   const versionToLoad = versionParam || agent?.current_version_id || '';
   
   const { data: rawVersionData, isLoading: versionLoading, error: versionError } = useAgentVersion(
-    agentId,
+    shouldFetchAgent ? agentId : '',
     shouldLoadVersion ? versionToLoad : null
   );
   
@@ -163,8 +174,8 @@ export function useAgentVersionData({ agentId }: UseAgentVersionDataProps): UseA
     };
   }, [versionData, versionParam, setCurrentVersion, clearVersionState]);
   
-  const isLoading = agentLoading || (shouldLoadVersion ? versionLoading : false);
-  const error = agentError || versionError;
+  const isLoading = shouldFetchAgent ? (agentLoading || (shouldLoadVersion ? versionLoading : false)) : false;
+  const error = shouldFetchAgent ? (agentError || versionError) : (!isValidId ? new Error('Invalid agent ID') : null);
   
   return {
     agent,

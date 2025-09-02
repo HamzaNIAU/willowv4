@@ -18,6 +18,7 @@ interface AgentSelectionState {
   initializeFromAgents: (agents: Agent[], threadAgentId?: string, onAgentSelect?: (agentId: string | undefined) => void) => void;
   autoSelectAgent: (agents: Agent[], onAgentSelect?: (agentId: string | undefined) => void, currentSelectedAgentId?: string) => void;
   clearSelection: () => void;
+  resetToDefault: () => void;
   
   getCurrentAgent: (agents: Agent[]) => Agent | null;
   isSunaAgent: (agents: Agent[]) => boolean;
@@ -40,33 +41,45 @@ export const useAgentSelectionStore = create<AgentSelectionState>()(
 
         let selectedId: string | undefined;
 
-        if (threadAgentId) {
+        // Check thread agent ID first
+        if (threadAgentId && agents.some(a => a.agent_id === threadAgentId)) {
           selectedId = threadAgentId;
         } else if (typeof window !== 'undefined') {
+          // Check URL parameter
           const urlParams = new URLSearchParams(window.location.search);
           const agentIdFromUrl = urlParams.get('agent_id');
-          if (agentIdFromUrl) {
+          if (agentIdFromUrl && agents.some(a => a.agent_id === agentIdFromUrl)) {
             selectedId = agentIdFromUrl;
           }
         }
 
+        // If no valid ID found yet, check persisted selection
         if (!selectedId) {
           const current = get().selectedAgentId;
           
           if (current && agents.some(a => a.agent_id === current)) {
             selectedId = current;
-          } else if (agents.length > 0) {
-            const defaultSunaAgent = agents.find(agent => agent.metadata?.is_suna_default);
-            selectedId = defaultSunaAgent ? defaultSunaAgent.agent_id : agents[0].agent_id;
           }
         }
 
-        if (selectedId) {
-          set({ selectedAgentId: selectedId });
+        // If still no valid ID, select default
+        if (!selectedId && agents.length > 0) {
+          const defaultSunaAgent = agents.find(agent => agent.metadata?.is_suna_default);
+          selectedId = defaultSunaAgent ? defaultSunaAgent.agent_id : agents[0].agent_id;
         }
 
-        if (selectedId && onAgentSelect) {
-          onAgentSelect(selectedId);
+        // Only set selectedId if it's valid
+        if (selectedId && agents.some(a => a.agent_id === selectedId)) {
+          set({ selectedAgentId: selectedId });
+          if (onAgentSelect) {
+            onAgentSelect(selectedId);
+          }
+        } else {
+          // Clear invalid selection
+          set({ selectedAgentId: undefined });
+          if (onAgentSelect) {
+            onAgentSelect(undefined);
+          }
         }
 
         set({ hasInitialized: true });
@@ -90,6 +103,10 @@ export const useAgentSelectionStore = create<AgentSelectionState>()(
 
       clearSelection: () => {
         set({ selectedAgentId: undefined, hasInitialized: false });
+      },
+
+      resetToDefault: () => {
+        set({ selectedAgentId: 'suna-default' });
       },
 
       getCurrentAgent: (agents: Agent[]) => {
@@ -126,6 +143,7 @@ export const useAgentSelection = () => {
     initializeFromAgents: store.initializeFromAgents,
     autoSelectAgent: store.autoSelectAgent,
     clearSelection: store.clearSelection,
+    resetToDefault: store.resetToDefault,
     getCurrentAgent: store.getCurrentAgent,
     isSunaAgent: store.isSunaAgent,
   };

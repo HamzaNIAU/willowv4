@@ -20,7 +20,8 @@ import { NewAgentDialog } from '@/components/agents/new-agent-dialog';
 
 import { useRouter } from 'next/navigation';
 import { cn, truncateString } from '@/lib/utils';
-import { KortixLogo } from '@/components/sidebar/kortix-logo';
+import { useFeatureFlag } from '@/lib/feature-flags';
+import { WillowLogo } from '@/components/sidebar/willow-logo';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 
 interface AgentSelectorProps {
@@ -45,6 +46,7 @@ export const AgentSelector: React.FC<AgentSelectorProps> = ({
   const [mounted, setMounted] = useState(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const router = useRouter();
+  const { enabled: customAgentsEnabled } = useFeatureFlag('custom_agents');
 
   // Fix hydration mismatch by ensuring component only renders after mount
   useEffect(() => {
@@ -96,7 +98,7 @@ export const AgentSelector: React.FC<AgentSelectorProps> = ({
       const isSelectedAgentSuna = selectedAgent.metadata?.is_suna_default || false;
       return {
         name: selectedAgent.name,
-        icon: isSelectedAgentSuna ? <KortixLogo size={16} /> : selectedAgent.icon
+        icon: isSelectedAgentSuna ? <WillowLogo size={16} /> : selectedAgent.icon
       };
     }
     
@@ -106,8 +108,8 @@ export const AgentSelector: React.FC<AgentSelectorProps> = ({
     const defaultAgent = allAgents[0];
     const isDefaultAgentSuna = defaultAgent?.metadata?.is_suna_default || false;
     return {
-      name: defaultAgent?.name || 'Suna',
-      icon: isDefaultAgentSuna ? <KortixLogo size={16} /> : (defaultAgent?.icon || <KortixLogo size={16} />)
+      name: defaultAgent?.name || 'Willow',
+      icon: isDefaultAgentSuna ? <WillowLogo size={16} /> : (defaultAgent?.icon || <WillowLogo size={16} />)
     };
   };
 
@@ -173,7 +175,7 @@ export const AgentSelector: React.FC<AgentSelectorProps> = ({
             >
               <div className="flex-shrink-0">
                 {isThisAgentSuna ? (
-                  <KortixLogo size={16} />
+                  <WillowLogo size={16} />
                 ) : (
                   agent.icon
                 )}
@@ -311,35 +313,39 @@ export const AgentSelector: React.FC<AgentSelectorProps> = ({
               </div>
             )}
           </div>
-          <div className="flex-shrink-0 p-4 pt-3 border-t border-border/40">
-            <div className="flex items-center justify-center gap-3">
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={handleExploreAll}
-                className="text-xs flex items-center gap-2 rounded-xl hover:bg-accent/40 transition-all duration-200 text-muted-foreground hover:text-foreground px-4 py-2"
-              >
-                <Search className="h-3.5 w-3.5" />
-                Explore All Agents
-              </Button>
-              <div className="w-px h-4 bg-border/60" />
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={handleCreateAgent}
-                className="text-xs flex items-center gap-2 rounded-xl hover:bg-accent/40 transition-all duration-200 text-muted-foreground hover:text-foreground px-4 py-2"
-              >
-                <Plus className="h-3.5 w-3.5" />
-                Create Agent
-              </Button>
+          {customAgentsEnabled && (
+            <div className="flex-shrink-0 p-4 pt-3 border-t border-border/40">
+              <div className="flex items-center justify-center gap-3">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={handleExploreAll}
+                  className="text-xs flex items-center gap-2 rounded-xl hover:bg-accent/40 transition-all duration-200 text-muted-foreground hover:text-foreground px-4 py-2"
+                >
+                  <Search className="h-3.5 w-3.5" />
+                  Explore All Agents
+                </Button>
+                <div className="w-px h-4 bg-border/60" />
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={handleCreateAgent}
+                  className="text-xs flex items-center gap-2 rounded-xl hover:bg-accent/40 transition-all duration-200 text-muted-foreground hover:text-foreground px-4 py-2"
+                >
+                  <Plus className="h-3.5 w-3.5" />
+                  Create Agent
+                </Button>
+              </div>
             </div>
-          </div>
+          )}
         </DropdownMenuContent>
       </DropdownMenu>
-      <NewAgentDialog 
-        open={showNewAgentDialog} 
-        onOpenChange={setShowNewAgentDialog}
-      />
+      {customAgentsEnabled && (
+        <NewAgentDialog 
+          open={showNewAgentDialog} 
+          onOpenChange={setShowNewAgentDialog}
+        />
+      )}
     </>
   );
 }; 

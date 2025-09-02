@@ -5,6 +5,7 @@ import { Square, Loader2, ArrowUp } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { UploadedFile } from './chat-input';
 import { FileUploadHandler } from './file-upload-handler';
+import { createClient } from '@/lib/supabase/client';
 import { VoiceRecorder } from './voice-recorder';
 import { UnifiedConfigMenu } from './unified-config-menu';
 import { canAccessModel, SubscriptionStatus } from './_use-model-selection';
@@ -33,6 +34,7 @@ interface MessageInputProps {
   fileInputRef: React.RefObject<HTMLInputElement>;
   isUploading: boolean;
   sandboxId?: string;
+  setSandboxId?: (id: string) => void; // Add callback to update sandbox ID
   setPendingFiles: React.Dispatch<React.SetStateAction<File[]>>;
   setUploadedFiles: React.Dispatch<React.SetStateAction<UploadedFile[]>>;
   setIsUploading: React.Dispatch<React.SetStateAction<boolean>>;
@@ -71,6 +73,7 @@ export const MessageInput = forwardRef<HTMLTextAreaElement, MessageInputProps>(
       fileInputRef,
       isUploading,
       sandboxId,
+      setSandboxId,
       setPendingFiles,
       setUploadedFiles,
       setIsUploading,
@@ -147,19 +150,30 @@ export const MessageInput = forwardRef<HTMLTextAreaElement, MessageInputProps>(
       }
       if (imageFiles.length > 0) {
         e.preventDefault();
-        handleFiles(
-          imageFiles,
-          sandboxId,
-          setPendingFiles,
-          setUploadedFiles,
-          setIsUploading,
-          messages,
-        );
+        // Get user ID for social media uploads
+        const supabase = createClient();
+        supabase.auth.getUser().then(({ data }) => {
+          const userId = data?.user?.id;
+          
+          handleFiles(
+            imageFiles,
+            sandboxId,
+            setPendingFiles,
+            setUploadedFiles,
+            setIsUploading,
+            messages,
+            undefined, // No queryClient in this context
+            value, // Pass current message for intent detection
+            userId, // Pass user ID for reference system
+          );
+        });
       }
     };
 
     const renderDropdown = () => {
       const showAdvancedFeatures = isLoggedIn && (enableAdvancedConfig || (customAgentsEnabled && !flagsLoading));
+      const showAgentSelector = isLoggedIn && !hideAgentSelection; // Always show agent selector when logged in
+      
       // Don't render dropdown components until after hydration to prevent ID mismatches
       if (!mounted) {
         return <div className="flex items-center gap-2 h-8" />; // Placeholder with same height
@@ -169,8 +183,8 @@ export const MessageInput = forwardRef<HTMLTextAreaElement, MessageInputProps>(
         <div className="flex items-center gap-2">
           <UnifiedConfigMenu
             isLoggedIn={isLoggedIn}
-            selectedAgentId={showAdvancedFeatures && !hideAgentSelection ? selectedAgentId : undefined}
-            onAgentSelect={showAdvancedFeatures && !hideAgentSelection ? onAgentSelect : undefined}
+            selectedAgentId={selectedAgentId}
+            onAgentSelect={onAgentSelect}
             selectedModel={selectedModel}
             onModelChange={onModelChange}
             modelOptions={modelOptions}
@@ -204,7 +218,9 @@ export const MessageInput = forwardRef<HTMLTextAreaElement, MessageInputProps>(
 
 
         <div className="flex items-center justify-between mt-0 mb-1 px-2">
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2">
+            {renderDropdown()}
+            
             {!hideAttachments && (
               <FileUploadHandler
                 ref={fileInputRef}
@@ -213,18 +229,24 @@ export const MessageInput = forwardRef<HTMLTextAreaElement, MessageInputProps>(
                 isAgentRunning={isAgentRunning}
                 isUploading={isUploading}
                 sandboxId={sandboxId}
+                setSandboxId={setSandboxId}
                 setPendingFiles={setPendingFiles}
                 setUploadedFiles={setUploadedFiles}
                 setIsUploading={setIsUploading}
                 messages={messages}
+                userMessage={value}
+                // userId will be fetched internally if not provided
                 isLoggedIn={isLoggedIn}
               />
             )}
             
-            <MCPConnectionsDropdown 
-              agentId={selectedAgentId}
-              disabled={disabled || loading}
-            />
+            {/* MCPConnectionsDropdown hidden - functionality moved to Social Media section in UnifiedConfigMenu */}
+            {false && (
+              <MCPConnectionsDropdown 
+                agentId={selectedAgentId}
+                disabled={disabled || loading}
+              />
+            )}
 
           </div>
 
@@ -242,7 +264,6 @@ export const MessageInput = forwardRef<HTMLTextAreaElement, MessageInputProps>(
           } */}
 
           <div className='flex items-center gap-2'>
-            {renderDropdown()}
             <BillingModal
               open={billingModalOpen}
               onOpenChange={setBillingModalOpen}

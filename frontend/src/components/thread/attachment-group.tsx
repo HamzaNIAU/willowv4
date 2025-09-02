@@ -111,7 +111,8 @@ export function AttachmentGroup({
     // Get local preview URL if available (for UploadedFile)
     const getLocalPreviewUrl = (file: string | UploadedFile): string | undefined => {
         if (typeof file === 'string') return undefined;
-        return !sandboxId ? file.localUrl : undefined;
+        // Always return localUrl if it exists, regardless of sandboxId
+        return file.localUrl;
     };
 
     // Check if a file is HTML, Markdown, CSV, or PDF (previewable types in grid)

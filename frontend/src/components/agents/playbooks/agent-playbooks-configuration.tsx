@@ -10,6 +10,7 @@ import type { AgentWorkflow } from '@/hooks/react-query/agents/workflow-utils';
 import { PlaybookCreateModal } from '@/components/playbooks/playbook-create-modal';
 import { PlaybookExecuteDialog } from '@/components/playbooks/playbook-execute-dialog';
 import { DeleteConfirmationDialog } from '@/components/thread/DeleteConfirmationDialog';
+import { useFeatureFlag } from '@/lib/feature-flags';
 
 interface AgentPlaybooksConfigurationProps {
     agentId: string;

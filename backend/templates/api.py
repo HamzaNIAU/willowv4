@@ -388,7 +388,7 @@ async def get_marketplace_templates(
     offset: Optional[int] = Query(0, description="Number of templates to skip"),
     search: Optional[str] = Query(None, description="Search term for name and description"),
     tags: Optional[str] = Query(None, description="Comma-separated list of tags to filter by"),
-    is_kortix_team: Optional[bool] = Query(None, description="Filter for Kortix team templates")
+    is_rzvi_team: Optional[bool] = Query(None, description="Filter for Rzvi team templates")
 ):
     try:
         logger.debug(

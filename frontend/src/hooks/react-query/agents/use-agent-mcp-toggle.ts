@@ -56,6 +56,18 @@ export const useUpdateAgentMcpToggle = () => {
       queryClient.invalidateQueries({ queryKey: ['agent-mcp-toggles', variables.agentId] });
       queryClient.invalidateQueries({ queryKey: ['composio-credentials-profiles'] });
       
+      // REAL-TIME: Invalidate YouTube channels when YouTube toggles change
+      if (variables.mcpId.startsWith('social.youtube.')) {
+        queryClient.invalidateQueries({ queryKey: ['youtube', 'channels'] });
+        queryClient.invalidateQueries({ queryKey: ['youtube'] }); // Invalidate all YouTube queries
+        
+        // Trigger live refresh of YouTube tool views via localStorage event
+        localStorage.setItem('youtube_toggle_changed', Date.now().toString());
+        localStorage.removeItem('youtube_toggle_changed'); // Trigger storage event
+        
+        console.log('🔄 Triggered real-time YouTube tool refresh');
+      }
+      
       // Show success message
       toast.success(`${variables.enabled ? 'Enabled' : 'Disabled'} successfully`);
     },
@@ -87,14 +99,20 @@ const useYouTubeChannels = () => {
 
 // Hook to get MCP configurations for an agent
 export const useAgentMcpConfigurations = (agentId?: string) => {
-  // Always call the hook with a value (empty string if no agentId)
+  // Special handling for suna-default virtual agent
+  const isVirtualAgent = agentId === 'suna-default';
+  
+  // Only call useAgent for non-virtual agents
   // The useAgent hook internally checks for valid agentId
-  const { data: agent, isLoading: agentLoading, error: agentError } = useAgent(agentId || '');
+  const { data: agent, isLoading: agentLoading, error: agentError } = useAgent(
+    isVirtualAgent ? '' : (agentId || '')
+  );
   const { data: composioProfiles, isLoading: composioLoading } = useComposioCredentialsProfiles();
   const { data: youtubeChannels, isLoading: youtubeLoading } = useYouTubeChannels();
   const { data: toggleStates, isLoading: togglesLoading } = useAgentMcpToggles(agentId);
   
-  const shouldFetch = !!agentId;
+  // Don't fetch agent data for virtual agents
+  const shouldFetch = !!agentId && !isVirtualAgent;
   
   // Extract MCP configurations from agent data
   // The agent stores MCPs in 'configured_mcps' field
@@ -174,7 +192,11 @@ export const useAgentMcpConfigurations = (agentId?: string) => {
   
   return React.useMemo(() => ({
     data: mcpConfigurations,
-    isLoading: shouldFetch ? (agentLoading || composioLoading || youtubeLoading || togglesLoading) : (composioLoading || youtubeLoading),
-    error: shouldFetch ? agentError : null,
-  }), [mcpConfigurations, agentLoading, composioLoading, youtubeLoading, togglesLoading, agentError, shouldFetch]);
+    isLoading: isVirtualAgent 
+      ? (composioLoading || youtubeLoading || togglesLoading)
+      : (shouldFetch 
+        ? (agentLoading || composioLoading || youtubeLoading || togglesLoading) 
+        : (composioLoading || youtubeLoading)),
+    error: isVirtualAgent ? null : (shouldFetch ? agentError : null),
+  }), [mcpConfigurations, agentLoading, composioLoading, youtubeLoading, togglesLoading, agentError, shouldFetch, isVirtualAgent]);
 };

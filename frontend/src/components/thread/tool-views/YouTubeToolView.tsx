@@ -22,6 +22,8 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { LoadingState } from './shared/LoadingState';
 import { toast } from 'sonner';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
+import { YouTubeUploadResultView } from './YouTubeUploadResultView';
+import { YouTubeUploadProgressView } from './YouTubeUploadProgressView';
 
 interface YouTubeChannel {
   id: string;
@@ -59,6 +61,27 @@ export function YouTubeToolView({
   isStreaming = false,
 }: ToolViewProps) {
   const [copiedId, setCopiedId] = React.useState<string | null>(null);
+  const [liveRefresh, setLiveRefresh] = React.useState(0);
+  
+  // Add real-time refresh capability
+  React.useEffect(() => {
+    const handleStorageChange = (e: StorageEvent) => {
+      if (e.key === 'youtube_toggle_changed') {
+        console.log('🔄 YouTube toggle changed - triggering live refresh');
+        setLiveRefresh(prev => prev + 1);
+      }
+    };
+    
+    window.addEventListener('storage', handleStorageChange);
+    return () => window.removeEventListener('storage', handleStorageChange);
+  }, []);
+  
+  // Trigger live refresh when component receives new content
+  React.useEffect(() => {
+    if (toolContent) {
+      setLiveRefresh(prev => prev + 1);
+    }
+  }, [toolContent]);
 
   const handleCopyChannelId = (channelId: string) => {
     navigator.clipboard.writeText(channelId);
@@ -71,7 +94,11 @@ export function YouTubeToolView({
   const { toolResult } = extractToolData(toolContent);
   
   if (isStreaming || (!toolResult?.toolOutput && !toolContent)) {
-    return <LoadingState title="Fetching YouTube channels..." />;
+    // Show appropriate loading message based on tool name
+    const loadingTitle = name?.includes('upload') ? "Processing video upload..." : 
+                        name?.includes('authenticate') ? "Connecting to YouTube..." :
+                        "Loading YouTube data...";
+    return <LoadingState title={loadingTitle} />;
   }
 
   // Parse the output
@@ -81,6 +108,7 @@ export function YouTubeToolView({
   let authUrl = '';
   let buttonText = '';
   let outputToParse: any = null;
+  let uploadResult: any = null;
   
   try {
     // First check if toolContent has the structured tool_execution format
@@ -173,7 +201,23 @@ export function YouTubeToolView({
       
       // Extract channels and message from parsed data
       if (parsedData) {
-        if (parsedData.channel && !parsedData.channels) {
+        // Check if this is an upload result (completed)
+        if (parsedData.upload_complete && parsedData.video_details) {
+          uploadResult = parsedData;
+          message = parsedData.message || '';
+        }
+        // Check if this is an upload initiation (show progress)
+        else if (parsedData.upload_id && parsedData.status && !parsedData.upload_complete) {
+          // This is an upload in progress - we need to show the progress view
+          uploadResult = {
+            upload_started: true,
+            upload_id: parsedData.upload_id,
+            status: parsedData.status,
+            channel_name: parsedData.channel_name,
+            message: parsedData.message || '',
+            title: parsedData.title || 'Untitled Video'
+          };
+        } else if (parsedData.channel && !parsedData.channels) {
           // Single channel format
           channels = [parsedData.channel];
           message = parsedData.message || `Analytics for ${parsedData.channel.name}`;
@@ -217,6 +261,8 @@ export function YouTubeToolView({
       hasChannels,
       channelsCount: channels.length,
       channels,
+      uploadResult: uploadResult ? 'present' : 'absent',
+      hasVideoDetails: uploadResult?.video_details ? 'yes' : 'no',
       message: message?.substring(0, 100) + (message?.length > 100 ? '...' : ''),
       authUrl: authUrl ? 'present' : 'absent',
       buttonText,
@@ -225,10 +271,38 @@ export function YouTubeToolView({
     });
   }
 
+  // Check if this is an upload - render appropriate upload view
+  if (uploadResult) {
+    // If we have video_details, show the completed result
+    if (uploadResult.video_details) {
+      return (
+        <YouTubeUploadResultView
+          video_details={uploadResult.video_details}
+          message={message}
+          timestamp={toolTimestamp}
+        />
+      );
+    }
+    // If we have upload_started flag, show the progress view
+    else if (uploadResult.upload_started && uploadResult.upload_id) {
+      return (
+        <YouTubeUploadProgressView
+          upload_id={uploadResult.upload_id}
+          title={uploadResult.title}
+          channel_name={uploadResult.channel_name}
+          onComplete={(videoDetails) => {
+            // When upload completes, we could trigger a refresh or update state
+            console.log('Upload completed:', videoDetails);
+          }}
+        />
+      );
+    }
+  }
+
   return (
     <Card className="overflow-hidden border-zinc-200 dark:border-zinc-700 shadow-lg">
       {/* Header */}
-      <CardHeader className="pb-4 bg-gradient-to-r from-red-600 to-red-700 dark:from-red-800 dark:to-red-900">
+      <CardHeader className="pb-4">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
             {/* YouTube Logo */}
@@ -240,11 +314,11 @@ export function YouTubeToolView({
               />
             </div>
             <div>
-              <CardTitle className="text-lg font-bold text-white flex items-center gap-2">
+              <CardTitle className="text-lg font-bold flex items-center gap-2">
                 YouTube Channels
               </CardTitle>
               {toolTimestamp && (
-                <p className="text-xs text-red-100 mt-0.5">
+                <p className="text-xs text-muted-foreground mt-0.5">
                   {formatTimestamp(toolTimestamp)}
                 </p>
               )}
@@ -257,7 +331,7 @@ export function YouTubeToolView({
                 Connected
               </Badge>
             )}
-            <Badge className="bg-white/20 text-white border-white/30 backdrop-blur-sm">
+            <Badge variant="secondary">
               {channels.length} {channels.length === 1 ? 'Channel' : 'Channels'}
             </Badge>
           </div>
@@ -272,7 +346,11 @@ export function YouTubeToolView({
               // Display the backend's helpful message
               <div className="space-y-4">
                 <div className="flex justify-center mb-4">
-                  <Youtube className="h-12 w-12 text-zinc-400" />
+                  <img 
+                    src="/platforms/youtube.svg" 
+                    alt="YouTube"
+                    className="h-12 w-12 opacity-40"
+                  />
                 </div>
                 <div className="prose prose-sm dark:prose-invert max-w-none">
                   <div dangerouslySetInnerHTML={{ __html: message.replace(/\n/g, '<br />') }} />
@@ -293,15 +371,26 @@ export function YouTubeToolView({
                 )}
               </div>
             ) : (
-              // Fallback message if no message from backend
+              // Enhanced error state with live recovery
               <div className="text-center">
-                <Youtube className="h-12 w-12 mx-auto text-zinc-400 mb-3" />
-                <p className="text-sm text-zinc-600 dark:text-zinc-400">
-                  No YouTube channels available
+                <img 
+                  src="/platforms/youtube.svg" 
+                  alt="YouTube"
+                  className="h-12 w-12 mx-auto opacity-40 mb-3"
+                />
+                <p className="text-sm text-zinc-600 dark:text-zinc-400 font-medium">
+                  No YouTube channels enabled
                 </p>
-                <p className="text-xs text-zinc-500 dark:text-zinc-500 mt-1">
-                  Use the authenticate command to connect your YouTube account
-                </p>
+                <div className="text-xs text-zinc-500 dark:text-zinc-500 mt-2 space-y-1">
+                  <p>Click the MCP connections button (⚙️) to enable channels</p>
+                  <p>Or use `youtube_authenticate` to connect new channels</p>
+                </div>
+                
+                {/* Live retry indicator */}
+                <div className="mt-3 flex items-center justify-center gap-2 text-xs text-blue-600">
+                  <div className="w-1 h-1 bg-blue-600 rounded-full animate-pulse"></div>
+                  <span>Checking for channel updates... (refresh #{liveRefresh})</span>
+                </div>
               </div>
             )}
           </div>
@@ -311,11 +400,11 @@ export function YouTubeToolView({
               {channels.map((channel) => (
                 <Card 
                   key={channel.id} 
-                  className="overflow-hidden bg-gradient-to-r from-zinc-50 to-zinc-100 dark:from-zinc-900 dark:to-zinc-800 border border-zinc-200 dark:border-zinc-700 hover:shadow-xl transition-all duration-300"
+                  className="overflow-hidden bg-card border border-border hover:bg-accent/5 transition-all duration-200"
                 >
                   <div className="flex items-stretch">
                     {/* Left side - Avatar and main info */}
-                    <div className="flex items-center gap-4 p-5 flex-1">
+                    <div className="flex items-center gap-4 p-4 flex-1">
                       {/* Channel Avatar */}
                       <div className="shrink-0 relative">
                         {channel.profile_picture ? (
@@ -339,8 +428,12 @@ export function YouTubeToolView({
                             </div>
                           </div>
                         ) : (
-                          <div className="w-20 h-20 rounded-full bg-gradient-to-br from-red-500 to-red-700 flex items-center justify-center shadow-lg">
-                            <Youtube className="h-10 w-10 text-white" />
+                          <div className="w-20 h-20 rounded-full bg-muted flex items-center justify-center">
+                            <img 
+                              src="/platforms/youtube.svg" 
+                              alt="YouTube"
+                              className="h-10 w-10 opacity-60"
+                            />
                           </div>
                         )}
                       </div>
@@ -349,39 +442,39 @@ export function YouTubeToolView({
                       <div className="flex-1 min-w-0">
                         <div className="flex items-start justify-between">
                           <div>
-                            <h4 className="text-lg font-bold text-zinc-900 dark:text-zinc-100">
+                            <h4 className="text-lg font-semibold text-foreground">
                               {channel.name}
                             </h4>
                             {channel.username && (
-                              <p className="text-sm text-zinc-600 dark:text-zinc-400 flex items-center gap-1">
-                                <span className="text-zinc-400">@</span>{channel.username}
+                              <p className="text-sm text-muted-foreground flex items-center gap-1">
+                                <span className="text-muted-foreground">@</span>{channel.username}
                               </p>
                             )}
                             
                             {/* Stats Row */}
                             <div className="flex flex-wrap items-center gap-4 mt-3">
                               <div className="flex items-center gap-1.5">
-                                <Users className="h-4 w-4 text-red-600 dark:text-red-500" />
-                                <span className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">
+                                <Users className="h-4 w-4 text-muted-foreground" />
+                                <span className="text-sm font-medium text-foreground">
                                   {formatNumber(channel.subscriber_count)}
                                 </span>
-                                <span className="text-xs text-zinc-500">subscribers</span>
+                                <span className="text-xs text-muted-foreground">subscribers</span>
                               </div>
 
                               <div className="flex items-center gap-1.5">
-                                <Eye className="h-4 w-4 text-blue-600 dark:text-blue-500" />
-                                <span className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">
+                                <Eye className="h-4 w-4 text-muted-foreground" />
+                                <span className="text-sm font-medium text-foreground">
                                   {formatNumber(channel.view_count)}
                                 </span>
-                                <span className="text-xs text-zinc-500">views</span>
+                                <span className="text-xs text-muted-foreground">views</span>
                               </div>
 
                               <div className="flex items-center gap-1.5">
-                                <PlayCircle className="h-4 w-4 text-green-600 dark:text-green-500" />
-                                <span className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">
+                                <PlayCircle className="h-4 w-4 text-muted-foreground" />
+                                <span className="text-sm font-medium text-foreground">
                                   {channel.video_count}
                                 </span>
-                                <span className="text-xs text-zinc-500">videos</span>
+                                <span className="text-xs text-muted-foreground">videos</span>
                               </div>
                             </div>
                           </div>
@@ -390,35 +483,15 @@ export function YouTubeToolView({
                     </div>
 
                     {/* Right side - Action buttons */}
-                    <div className="flex flex-col justify-center gap-2 p-4 bg-gradient-to-l from-zinc-100 to-transparent dark:from-zinc-800 dark:to-transparent">
+                    <div className="flex flex-col justify-center gap-2 p-4 bg-muted/30">
                       <Button
-                        className="bg-red-600 hover:bg-red-700 text-white font-medium px-4 py-2 flex items-center gap-2 shadow-md"
+                        variant="default"
+                        size="sm"
+                        className="flex items-center gap-2"
                         onClick={() => window.open(`https://youtube.com/channel/${channel.id}`, '_blank')}
                       >
-                        <img 
-                          src="/platforms/youtube.svg" 
-                          alt="YouTube"
-                          className="h-4 w-4 object-contain brightness-0 invert"
-                        />
+                        <ExternalLink className="h-4 w-4" />
                         View Channel
-                      </Button>
-                      
-                      <Button
-                        variant="outline"
-                        className="border-zinc-300 dark:border-zinc-600 hover:bg-zinc-100 dark:hover:bg-zinc-700"
-                        onClick={() => handleCopyChannelId(channel.id)}
-                      >
-                        {copiedId === channel.id ? (
-                          <>
-                            <CheckCircle className="h-4 w-4 text-green-600 mr-2" />
-                            Copied!
-                          </>
-                        ) : (
-                          <>
-                            <Copy className="h-4 w-4 mr-2" />
-                            Copy ID
-                          </>
-                        )}
                       </Button>
                     </div>
                   </div>
@@ -431,7 +504,7 @@ export function YouTubeToolView({
         {/* OAuth Button if auth URL is present */}
         {authUrl && (
           <div className="mt-4">
-            <Card className="border bg-gradient-to-r from-red-50 to-red-100 dark:from-red-950/30 dark:to-red-900/30 border-red-200 dark:border-red-800">
+            <Card className="border bg-muted/30 border-border">
               <CardContent className="p-4">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-3">
@@ -443,10 +516,10 @@ export function YouTubeToolView({
                       />
                     </div>
                     <div>
-                      <h3 className="font-semibold text-zinc-900 dark:text-zinc-100">
+                      <h3 className="font-semibold text-foreground">
                         Connect YouTube Account
                       </h3>
-                      <p className="text-sm text-zinc-600 dark:text-zinc-400">
+                      <p className="text-sm text-muted-foreground">
                         Click to authorize access to your YouTube channel
                       </p>
                     </div>
@@ -525,7 +598,7 @@ export function YouTubeToolView({
                       window.addEventListener('message', handleMessage);
                       window.addEventListener('storage', handleStorage);
                     }}
-                    className="bg-red-600 hover:bg-red-700 text-white"
+                    className="bg-primary hover:bg-primary/90 text-primary-foreground"
                   >
                     <img 
                       src="/platforms/youtube.svg" 
@@ -540,8 +613,8 @@ export function YouTubeToolView({
           </div>
         )}
 
-        {/* Summary Message */}
-        {message && !authUrl && (
+        {/* Summary Message - Hidden for cleaner UI */}
+        {false && message && !authUrl && (
           <div className="mt-4 p-3 bg-zinc-50 dark:bg-zinc-900/50 rounded-lg border border-zinc-200 dark:border-zinc-700">
             <p className="text-sm text-zinc-600 dark:text-zinc-400">
               {message}

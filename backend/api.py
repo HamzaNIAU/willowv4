@@ -68,6 +68,22 @@ async def lifespan(app: FastAPI):
         # Start background tasks
         # asyncio.create_task(agent_api.restore_running_agent_runs())
         
+        # Warm YouTube channel cache on startup
+        try:
+            from services.youtube_cache_warmup import warm_youtube_cache_on_startup
+            asyncio.create_task(warm_youtube_cache_on_startup())
+            logger.info("Started YouTube channel cache warmup task")
+        except Exception as e:
+            logger.warning(f"Failed to start YouTube channel cache warmup: {e}")
+        
+        # Initialize Smart Token Management System (Morphic-inspired)
+        try:
+            from services.smart_token_manager import initialize_smart_token_system
+            await initialize_smart_token_system(db)
+            logger.info("🧠 Smart Token Management System started with background monitoring")
+        except Exception as e:
+            logger.warning(f"Failed to start smart token management: {e}")
+        
         triggers_api.initialize(db)
         pipedream_api.initialize(db)
         credentials_api.initialize(db)
@@ -75,6 +91,7 @@ async def lifespan(app: FastAPI):
         composio_api.initialize(db)
         youtube_api.initialize(db)
         files_api_initialize(db)
+        social_media_api.initialize(db)
         
         yield
         
@@ -184,6 +201,13 @@ api_router.include_router(triggers_api.router)
 from pipedream import api as pipedream_api
 api_router.include_router(pipedream_api.router)
 
+# YouTube Sandbox API for Daytona integration
+import api_endpoints_for_sandbox as youtube_sandbox_api
+youtube_sandbox_api.initialize(db)
+api_router.include_router(youtube_sandbox_api.router)
+
+# Unified Social Media Account System - Added to YouTube API to avoid import issues
+
 # MFA functionality moved to frontend
 
 
@@ -200,6 +224,9 @@ api_router.include_router(youtube_api.router)
 from files_api import router as files_router
 from files_api import initialize as files_api_initialize
 api_router.include_router(files_router)
+
+import social_media_api
+api_router.include_router(social_media_api.router)
 
 @api_router.get("/health")
 async def health_check():

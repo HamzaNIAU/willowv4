@@ -14,9 +14,9 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
-import { Cpu, Search, Check, ChevronDown, Plus, ExternalLink } from 'lucide-react';
+import { Cpu, Search, Check, ChevronDown, Plus, ExternalLink, FileText, BookOpen, Zap, Brain, Database, Youtube } from 'lucide-react';
 import { useAgents } from '@/hooks/react-query/agents/use-agents';
-import { KortixLogo } from '@/components/sidebar/kortix-logo';
+import { WillowLogo } from '@/components/sidebar/willow-logo';
 import type { ModelOption, SubscriptionStatus } from './_use-model-selection';
 import { MODELS } from './_use-model-selection';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
@@ -29,6 +29,10 @@ import { useAgentWorkflows } from '@/hooks/react-query/agents/use-agent-workflow
 import { PlaybookExecuteDialog } from '@/components/playbooks/playbook-execute-dialog';
 import { AgentAvatar } from '@/components/thread/content/agent-avatar';
 import { AgentModelSelector } from '@/components/agents/config/model-selector';
+import { useFeatureFlag } from '@/lib/feature-flags';
+import { useRouter } from 'next/navigation';
+import { useAgentMcpConfigurations, useUpdateAgentMcpToggle } from '@/hooks/react-query/agents/use-agent-mcp-toggle';
+import { Switch } from '@/components/ui/switch';
 
 type UnifiedConfigMenuProps = {
     isLoggedIn?: boolean;
@@ -65,9 +69,17 @@ const LoggedInMenu: React.FC<UnifiedConfigMenuProps> = ({
     const [showNewAgentDialog, setShowNewAgentDialog] = useState(false);
     const searchInputRef = useRef<HTMLInputElement>(null);
     const [execDialog, setExecDialog] = useState<{ open: boolean; playbook: any | null; agentId: string | null }>({ open: false, playbook: null, agentId: null });
+    const router = useRouter();
+    
+    // YouTube toggle functionality
+    const { data: mcpConfigurations = [], isLoading: mcpLoading } = useAgentMcpConfigurations(selectedAgentId);
+    const updateMcpToggle = useUpdateAgentMcpToggle();
+    const [localToggles, setLocalToggles] = useState<Record<string, boolean>>({});
 
     const { data: agentsResponse } = useAgents({}, { enabled: isLoggedIn });
     const agents: any[] = agentsResponse?.agents || [];
+    const { enabled: hideAgentCreation } = useFeatureFlag('hide_agent_creation');
+    const { enabled: customAgentsEnabled } = useFeatureFlag('custom_agents');
 
 
 
@@ -102,7 +114,18 @@ const LoggedInMenu: React.FC<UnifiedConfigMenuProps> = ({
 
     // Filtered agents with selected first
     const filteredAgents = useMemo(() => {
-        const list = [...agents];
+        let list = [...agents];
+        
+        // When custom agents disabled, create virtual Willow agent
+        if (!customAgentsEnabled) {
+            list = [{
+                agent_id: 'suna-default',
+                name: 'Suna',
+                description: 'Default AI assistant',
+                metadata: { is_suna_default: true }
+            }];
+        }
+        
         const selected = selectedAgentId ? list.find(a => a.agent_id === selectedAgentId) : undefined;
         const rest = selected ? list.filter(a => a.agent_id !== selectedAgentId) : list;
         const ordered = selected ? [selected, ...rest] : rest;
@@ -110,7 +133,7 @@ const LoggedInMenu: React.FC<UnifiedConfigMenuProps> = ({
             a?.name?.toLowerCase().includes(searchQuery.toLowerCase()) ||
             a?.description?.toLowerCase().includes(searchQuery.toLowerCase())
         ));
-    }, [agents, selectedAgentId, searchQuery]);
+    }, [agents, selectedAgentId, searchQuery, customAgentsEnabled]);
 
     // Top 3 slice
     const topAgents = useMemo(() => filteredAgents.slice(0, 3), [filteredAgents]);
@@ -131,13 +154,69 @@ const LoggedInMenu: React.FC<UnifiedConfigMenuProps> = ({
     };
 
     const displayAgent = useMemo(() => {
+        // When custom agents disabled, create virtual Willow agent
+        if (!customAgentsEnabled) {
+            return {
+                agent_id: 'suna-default',
+                name: 'Willow',
+                description: 'Default AI assistant',
+                metadata: { is_suna_default: true }
+            };
+        }
+        
         const found = agents.find(a => a.agent_id === selectedAgentId) || agents[0];
         return found;
-    }, [agents, selectedAgentId]);
+    }, [agents, selectedAgentId, customAgentsEnabled]);
 
     const currentAgentIdForPlaybooks = isLoggedIn ? displayAgent?.agent_id || '' : '';
     const { data: playbooks = [], isLoading: playbooksLoading } = useAgentWorkflows(currentAgentIdForPlaybooks);
     const [playbooksExpanded, setPlaybooksExpanded] = useState(true);
+    
+    // Initialize local toggles from MCP configurations
+    React.useEffect(() => {
+        const initialToggles: Record<string, boolean> = {};
+        mcpConfigurations.forEach((mcp: any) => {
+            const mcpId = mcp.qualifiedName || mcp.mcp_qualified_name || `${mcp.name}`;
+            initialToggles[mcpId] = mcp.enabled !== false;
+        });
+        setLocalToggles(initialToggles);
+    }, [mcpConfigurations]);
+    
+    // Handle YouTube channel toggle
+    const handleYouTubeToggle = React.useCallback(async (mcpId: string) => {
+        // Update local state immediately for responsive UI
+        const currentEnabled = localToggles[mcpId] ?? true;
+        const newEnabled = !currentEnabled;
+        
+        setLocalToggles(prev => ({
+            ...prev,
+            [mcpId]: newEnabled
+        }));
+
+        // Persist the change if agent is selected
+        if (selectedAgentId) {
+            try {
+                await updateMcpToggle.mutateAsync({
+                    agentId: selectedAgentId,
+                    mcpId,
+                    enabled: newEnabled,
+                });
+            } catch (error) {
+                // Revert on error
+                setLocalToggles(prev => ({
+                    ...prev,
+                    [mcpId]: currentEnabled
+                }));
+            }
+        }
+    }, [selectedAgentId, updateMcpToggle, localToggles]);
+    
+    // Filter YouTube channels from MCP configurations
+    const youtubeChannels = React.useMemo(() => {
+        return mcpConfigurations.filter((mcp: any) => 
+            mcp.platform === 'youtube' && mcp.isSocialMedia
+        );
+    }, [mcpConfigurations]);
 
     return (
         <>
@@ -146,9 +225,9 @@ const LoggedInMenu: React.FC<UnifiedConfigMenuProps> = ({
             <DropdownMenu open={isOpen} onOpenChange={setIsOpen}>
                 <DropdownMenuTrigger asChild>
                     <Button
-                        variant="ghost"
+                        variant="outline"
                         size="sm"
-                        className="h-8 px-2 bg-transparent border-0 rounded-xl text-muted-foreground hover:text-foreground hover:bg-accent/50 flex items-center gap-1.5"
+                        className="h-8 px-3 py-2 bg-transparent border border-border rounded-xl text-muted-foreground hover:text-foreground hover:bg-accent/50 flex items-center gap-1.5"
                         aria-label="Config menu"
                     >
                         {onAgentSelect ? (
@@ -159,7 +238,6 @@ const LoggedInMenu: React.FC<UnifiedConfigMenuProps> = ({
                                 <span className="truncate text-sm">
                                     {displayAgent?.name || 'Suna'}
                                 </span>
-                                <ChevronDown size={12} className="opacity-60" />
                             </div>
                         ) : (
                             <div className="flex items-center gap-1.5">
@@ -191,35 +269,107 @@ const LoggedInMenu: React.FC<UnifiedConfigMenuProps> = ({
                         <div className="px-1.5">
                             <div className="px-3 py-1 text-[11px] font-medium text-muted-foreground flex items-center justify-between">
                                 <span>Agents</span>
-                                <Button
-                                    size="sm"
-                                    variant="ghost"
-                                    className="h-6 w-6 p-0 text-muted-foreground hover:text-foreground"
-                                    onClick={() => { setIsOpen(false); setShowNewAgentDialog(true); }}
-                                >
-                                    <Plus className="h-3.5 w-3.5" />
-                                </Button>
+                                {!hideAgentCreation && (
+                                    <Button
+                                        size="sm"
+                                        variant="ghost"
+                                        className="h-6 w-6 p-0 text-muted-foreground hover:text-foreground"
+                                        onClick={() => { setIsOpen(false); setShowNewAgentDialog(true); }}
+                                    >
+                                        <Plus className="h-3.5 w-3.5" />
+                                    </Button>
+                                )}
                             </div>
                             {topAgents.length === 0 ? (
                                 <div className="px-3 py-2 text-xs text-muted-foreground">No agents</div>
                             ) : (
-                                <div className="max-h-[132px] overflow-y-auto">
-                                    {filteredAgents.map((agent) => (
-                                        <DropdownMenuItem
-                                            key={agent.agent_id}
-                                            className="text-sm px-3 py-2 mx-0 my-0.5 flex items-center justify-between cursor-pointer rounded-lg"
-                                            onClick={() => handleAgentClick(agent.agent_id)}
-                                        >
-                                            <div className="flex items-center gap-2 min-w-0">
-                                                {renderAgentIcon(agent)}
-                                                <span className="truncate">{agent.name}</span>
-                                            </div>
-                                            {selectedAgentId === agent.agent_id && (
-                                                <Check className="h-4 w-4 text-blue-500" />
-                                            )}
-                                        </DropdownMenuItem>
-                                    ))}
-                                </div>
+                                <DropdownMenuSub>
+                                    <DropdownMenuSubTrigger className="text-sm px-3 py-2 mx-0 my-0.5 flex items-center cursor-pointer rounded-lg">
+                                        <div className="flex items-center gap-2 min-w-0">
+                                            {renderAgentIcon(displayAgent)}
+                                            <span className="truncate">{displayAgent?.name || 'Suna'}</span>
+                                        </div>
+                                    </DropdownMenuSubTrigger>
+                                    <DropdownMenuPortal>
+                                        <DropdownMenuSubContent className="w-64 rounded-xl">
+                                            {/* Playbooks */}
+                                            <DropdownMenuSub>
+                                                <DropdownMenuSubTrigger className="px-3 py-2 text-sm cursor-pointer rounded-lg flex items-center gap-2">
+                                                    <BookOpen className="h-4 w-4" />
+                                                    <span>Playbooks</span>
+                                                </DropdownMenuSubTrigger>
+                                                <DropdownMenuPortal>
+                                                    <DropdownMenuSubContent className="w-72 rounded-xl max-h-80 overflow-y-auto">
+                                                        {/* Manage Playbooks Link */}
+                                                        <DropdownMenuItem
+                                                            className="text-sm px-3 py-2 mx-0 my-0.5 flex items-center gap-2 cursor-pointer rounded-lg border-b border-border/50 mb-1"
+                                                            onClick={() => {
+                                                                setIsOpen(false);
+                                                                router.push(`/agents/config/suna-default?tab=configuration&accordion=workflows`);
+                                                            }}
+                                                        >
+                                                            <BookOpen className="h-4 w-4" />
+                                                            <span className="font-medium">Manage Playbooks</span>
+                                                        </DropdownMenuItem>
+                                                        
+                                                        {/* Individual Playbooks */}
+                                                        {playbooksLoading ? (
+                                                            <div className="px-3 py-2 text-xs text-muted-foreground">Loading…</div>
+                                                        ) : playbooks && playbooks.length > 0 ? (
+                                                            playbooks.map((wf: any) => (
+                                                                <DropdownMenuItem
+                                                                    key={`pb-${wf.id}`}
+                                                                    className="text-sm px-3 py-2 mx-0 my-0.5 flex items-center justify-between cursor-pointer rounded-lg"
+                                                                    onClick={(e) => { e.stopPropagation(); setExecDialog({ open: true, playbook: wf, agentId: currentAgentIdForPlaybooks }); setIsOpen(false); }}
+                                                                >
+                                                                    <span className="truncate">{wf.name}</span>
+                                                                </DropdownMenuItem>
+                                                            ))
+                                                        ) : (
+                                                            <div className="px-3 py-2 text-xs text-muted-foreground">No playbooks</div>
+                                                        )}
+                                                    </DropdownMenuSubContent>
+                                                </DropdownMenuPortal>
+                                            </DropdownMenuSub>
+                                            
+                                            {/* Instructions */}
+                                            <DropdownMenuItem 
+                                                className="px-3 py-2 text-sm cursor-pointer rounded-lg flex items-center gap-2"
+                                                onClick={() => {
+                                                    setIsOpen(false);
+                                                    router.push(`/agents/config/suna-default?tab=configuration&accordion=instructions`);
+                                                }}
+                                            >
+                                                <FileText className="h-4 w-4" />
+                                                <span>Instructions</span>
+                                            </DropdownMenuItem>
+                                            
+                                            {/* Knowledge */}
+                                            <DropdownMenuItem 
+                                                className="px-3 py-2 text-sm cursor-pointer rounded-lg flex items-center gap-2"
+                                                onClick={() => {
+                                                    setIsOpen(false);
+                                                    router.push(`/agents/config/suna-default?tab=configuration&accordion=knowledge`);
+                                                }}
+                                            >
+                                                <Database className="h-4 w-4" />
+                                                <span>Knowledge</span>
+                                            </DropdownMenuItem>
+                                            
+                                            {/* Triggers */}
+                                            <DropdownMenuItem 
+                                                className="px-3 py-2 text-sm cursor-pointer rounded-lg flex items-center gap-2"
+                                                onClick={() => {
+                                                    setIsOpen(false);
+                                                    router.push(`/agents/config/suna-default?tab=configuration&accordion=triggers`);
+                                                }}
+                                            >
+                                                <Zap className="h-4 w-4" />
+                                                <span>Triggers</span>
+                                            </DropdownMenuItem>
+                                        </DropdownMenuSubContent>
+                                    </DropdownMenuPortal>
+                                </DropdownMenuSub>
                             )}
 
                             {/* Agents "see all" removed; scroll container shows all */}
@@ -242,35 +392,102 @@ const LoggedInMenu: React.FC<UnifiedConfigMenuProps> = ({
 
                     <DropdownMenuSeparator />
 
-                    {/* Playbooks submenu (current agent) */}
-                    {onAgentSelect && (
-                        <div className="px-1.5">
-                            <DropdownMenuSub>
-                                <DropdownMenuSubTrigger className="flex items-center rounded-lg gap-2 px-3 py-2 mx-0 my-0.5">
-                                    <span className="font-medium">Playbooks</span>
-                                </DropdownMenuSubTrigger>
-                                <DropdownMenuPortal>
-                                    <DropdownMenuSubContent className="w-72 rounded-xl max-h-80 overflow-y-auto">
-                                        {playbooksLoading ? (
-                                            <div className="px-3 py-2 text-xs text-muted-foreground">Loading…</div>
-                                        ) : playbooks && playbooks.length > 0 ? (
-                                            playbooks.map((wf: any) => (
-                                                <DropdownMenuItem
-                                                    key={`pb-${wf.id}`}
-                                                    className="text-sm px-3 py-2 mx-0 my-0.5 flex items-center justify-between cursor-pointer rounded-lg"
-                                                    onClick={(e) => { e.stopPropagation(); setExecDialog({ open: true, playbook: wf, agentId: currentAgentIdForPlaybooks }); setIsOpen(false); }}
+                    {/* Social Media */}
+                    <div className="px-1.5">
+                        <div className="px-3 py-1 text-[11px] font-medium text-muted-foreground">Social Media</div>
+                        <DropdownMenuSub>
+                            <DropdownMenuSubTrigger className="flex items-center gap-2 px-3 py-2 mx-0 my-0.5 text-sm cursor-pointer rounded-lg">
+                                <img 
+                                    src="/platforms/youtube.svg" 
+                                    alt="YouTube"
+                                    className="h-4 w-4"
+                                />
+                                <span>YouTube</span>
+                                {youtubeChannels.length > 0 && (
+                                    <span className="ml-auto text-xs text-muted-foreground">
+                                        {youtubeChannels.filter(ch => localToggles[ch.qualifiedName] !== false).length}
+                                    </span>
+                                )}
+                            </DropdownMenuSubTrigger>
+                            <DropdownMenuPortal>
+                                <DropdownMenuSubContent className="w-72 rounded-xl max-h-80 overflow-y-auto">
+                                    {youtubeChannels.length === 0 ? (
+                                        <div className="px-3 py-4 text-center">
+                                            <div className="text-sm text-muted-foreground mb-2">No YouTube channels connected</div>
+                                            <Button
+                                                size="sm"
+                                                onClick={() => {
+                                                    setIsOpen(false);
+                                                    router.push('/social-media');
+                                                }}
+                                                className="text-xs"
+                                            >
+                                                Connect YouTube Channel
+                                            </Button>
+                                        </div>
+                                    ) : (
+                                        <>
+                                            <div className="px-3 py-2 border-b border-border/50">
+                                                <div className="text-xs font-medium text-muted-foreground mb-1">Connected Channels</div>
+                                                <div className="text-xs text-muted-foreground">
+                                                    Toggle channels on/off for this agent
+                                                </div>
+                                            </div>
+                                            {youtubeChannels.map((channel: any) => {
+                                                const mcpId = channel.qualifiedName;
+                                                const isEnabled = localToggles[mcpId] ?? (channel.enabled !== false);
+                                                const profilePicture = channel.profile_picture || channel.config?.profile_picture;
+                                                
+                                                return (
+                                                    <div
+                                                        key={mcpId}
+                                                        className="flex items-center justify-between px-3 py-2 hover:bg-accent/50"
+                                                    >
+                                                        <div className="flex items-center gap-2 min-w-0">
+                                                            {profilePicture ? (
+                                                                <img
+                                                                    src={profilePicture}
+                                                                    alt={channel.name}
+                                                                    className="h-5 w-5 rounded-full object-cover border border-border/50"
+                                                                />
+                                                            ) : (
+                                                                <img 
+                                                                  src="/platforms/youtube.svg" 
+                                                                  alt="YouTube"
+                                                                  className="h-5 w-5"
+                                                                />
+                                                            )}
+                                                            <span className="text-sm truncate">{channel.name}</span>
+                                                        </div>
+                                                        <Switch
+                                                            checked={isEnabled}
+                                                            onCheckedChange={() => handleYouTubeToggle(mcpId)}
+                                                            className="scale-90"
+                                                        />
+                                                    </div>
+                                                );
+                                            })}
+                                            <div className="px-3 py-2 border-t border-border/50">
+                                                <Button
+                                                    size="sm"
+                                                    variant="ghost"
+                                                    onClick={() => {
+                                                        setIsOpen(false);
+                                                        router.push('/social-media');
+                                                    }}
+                                                    className="w-full text-xs justify-center"
                                                 >
-                                                    <span className="truncate">{wf.name}</span>
-                                                </DropdownMenuItem>
-                                            ))
-                                        ) : (
-                                            <div className="px-3 py-2 text-xs text-muted-foreground">No playbooks</div>
-                                        )}
-                                    </DropdownMenuSubContent>
-                                </DropdownMenuPortal>
-                            </DropdownMenuSub>
-                        </div>
-                    )}
+                                                    Manage YouTube Accounts
+                                                </Button>
+                                            </div>
+                                        </>
+                                    )}
+                                </DropdownMenuSubContent>
+                            </DropdownMenuPortal>
+                        </DropdownMenuSub>
+                    </div>
+
+                    <DropdownMenuSeparator />
 
                     {/* Quick Integrations */}
                     {(
@@ -329,8 +546,10 @@ const LoggedInMenu: React.FC<UnifiedConfigMenuProps> = ({
                 </DialogContent>
             </Dialog>
 
-            {/* Create Agent */}
-            <NewAgentDialog open={showNewAgentDialog} onOpenChange={setShowNewAgentDialog} />
+            {/* Create Agent - Only show when agent creation is not hidden */}
+            {!hideAgentCreation && (
+                <NewAgentDialog open={showNewAgentDialog} onOpenChange={setShowNewAgentDialog} />
+            )}
 
             {/* Execute Playbook */}
             <PlaybookExecuteDialog
@@ -352,17 +571,16 @@ const GuestMenu: React.FC<UnifiedConfigMenuProps> = () => {
                 <TooltipTrigger asChild>
                     <span className="inline-flex">
                         <Button
-                            variant="ghost"
+                            variant="outline"
                             size="sm"
-                            className="h-8 px-2 bg-transparent border-0 rounded-xl text-muted-foreground hover:text-foreground hover:bg-accent/50 flex items-center gap-1.5 cursor-not-allowed opacity-80 pointer-events-none"
+                            className="h-8 px-3 py-2 bg-transparent border border-border rounded-xl text-muted-foreground hover:text-foreground hover:bg-accent/50 flex items-center gap-1.5 cursor-not-allowed opacity-80 pointer-events-none"
                             disabled
                         >
                             <div className="flex items-center gap-2 max-w-[160px]">
                                 <div className="flex-shrink-0">
-                                    <KortixLogo size={16} />
+                                    <WillowLogo size={16} />
                                 </div>
                                 <span className="truncate text-sm">Suna</span>
-                                <ChevronDown size={12} className="opacity-60" />
                             </div>
                         </Button>
                     </span>

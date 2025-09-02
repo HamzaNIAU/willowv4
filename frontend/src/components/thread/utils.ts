@@ -1,4 +1,4 @@
-import type { ElementType } from 'react';
+import React, { type ElementType } from 'react';
 import {
   FileText,
   Terminal,
@@ -24,6 +24,15 @@ import {
   ListTodo,
   List,
 } from 'lucide-react';
+
+// Custom YouTube icon component using the actual YouTube SVG
+const YouTubeIcon: ElementType = (props: any) => 
+  React.createElement('img', {
+    src: '/platforms/youtube.svg',
+    alt: 'YouTube',
+    className: props.className || 'h-4 w-4',
+    ...props
+  });
 
 // Flag to control whether tool result messages are rendered
 export const SHOULD_RENDER_TOOL_RESULTS = false;
@@ -158,6 +167,19 @@ export const getToolIcon = (toolName: string): ElementType => {
     // Task completion
     case 'complete':
       return CheckCircle2;
+
+    // YouTube tools
+    case 'youtube-channels':
+    case 'youtube-authenticate':
+    case 'youtube-upload-video':
+    case 'youtube-list-channel-videos':
+    case 'youtube-manage-video':
+    case 'youtube-list-captions':
+    case 'youtube-download-caption':
+    case 'youtube-list-playlists':
+    case 'youtube-smart-search':
+    case 'youtube-check-upload-status':
+      return YouTubeIcon;
 
     default:
       if (toolName?.startsWith('mcp_')) {

@@ -2,25 +2,28 @@ from typing import Dict, Any, Optional, List
 from utils.logger import logger
 
 
-def extract_agent_config(agent_data: Dict[str, Any], version_data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+async def extract_agent_config(agent_data: Dict[str, Any], version_data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Extract agent configuration with simplified logic for Suna vs custom agents."""
     agent_id = agent_data.get('agent_id', 'Unknown')
     metadata = agent_data.get('metadata', {})
-    is_suna_default = metadata.get('is_suna_default', False)
+    is_suna_default = metadata.get('is_suna_default', False) or agent_id == 'suna-default'
     
     # Handle Suna agents with special logic
     if is_suna_default:
-        return _extract_suna_agent_config(agent_data, version_data)
+        return await _extract_suna_agent_config(agent_data, version_data)
     
     # Handle custom agents with versioning
     return _extract_custom_agent_config(agent_data, version_data)
 
 
-def _extract_suna_agent_config(agent_data: Dict[str, Any], version_data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+async def _extract_suna_agent_config(agent_data: Dict[str, Any], version_data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Extract config for Suna agents - always use central config with user customizations."""
     from agent.suna_config import SUNA_CONFIG
+    from services import redis
+    import json
     
     agent_id = agent_data.get('agent_id', 'Unknown')
+    account_id = agent_data.get('account_id')
     logger.debug(f"Using Suna central config for agent {agent_id}")
     
     # Start with central Suna config
@@ -36,10 +39,11 @@ def _extract_suna_agent_config(agent_data: Dict[str, Any], version_data: Optiona
         'is_default': True,
         'is_suna_default': True,
         'centrally_managed': True,
-        'account_id': agent_data.get('account_id'),
+        'account_id': account_id,
         'current_version_id': agent_data.get('current_version_id'),
         'version_name': version_data.get('version_name', 'v1') if version_data else 'v1',
         'profile_image_url': agent_data.get('profile_image_url'),
+        'youtube_channels': [],  # Will be populated from cache during agent execution
         'restrictions': {
             'system_prompt_editable': False,
             'tools_editable': False,
@@ -49,9 +53,27 @@ def _extract_suna_agent_config(agent_data: Dict[str, Any], version_data: Optiona
         }
     }
     
-    # Add user customizations from version or agent data
-    if version_data:
-        # Get customizations from version data
+    # Get user-specific configuration from Redis if suna-default
+    if agent_id == 'suna-default' and account_id:
+        try:
+            redis_client = await redis.get_client()
+            config_key = f"suna_default_config:{account_id}"
+            user_config_str = await redis_client.get(config_key)
+            
+            if user_config_str:
+                user_config = json.loads(user_config_str)
+                config['configured_mcps'] = user_config.get('configured_mcps', SUNA_CONFIG['configured_mcps'])
+                config['custom_mcps'] = user_config.get('custom_mcps', SUNA_CONFIG['custom_mcps'])
+                config['model'] = user_config.get('model', SUNA_CONFIG.get('model'))
+            else:
+                config['configured_mcps'] = SUNA_CONFIG['configured_mcps']
+                config['custom_mcps'] = SUNA_CONFIG['custom_mcps']
+        except Exception as e:
+            logger.warning(f"Failed to get user config from Redis: {e}")
+            config['configured_mcps'] = SUNA_CONFIG['configured_mcps']
+            config['custom_mcps'] = SUNA_CONFIG['custom_mcps']
+    elif version_data:
+        # Get customizations from version data for other Suna agents
         if version_data.get('config'):
             version_config = version_data['config']
             tools = version_config.get('tools', {})
@@ -123,6 +145,7 @@ def _extract_custom_agent_config(agent_data: Dict[str, Any], version_data: Optio
             'account_id': agent_data.get('account_id'),
             'current_version_id': agent_data.get('current_version_id'),
             'version_name': version_data.get('version_name', 'v1'),
+            'youtube_channels': [],  # Will be populated from cache during agent execution
             'restrictions': {}
         }
     
@@ -148,6 +171,7 @@ def _extract_custom_agent_config(agent_data: Dict[str, Any], version_data: Optio
         'centrally_managed': False,
         'account_id': agent_data.get('account_id'),
         'current_version_id': agent_data.get('current_version_id'),
+        'youtube_channels': [],  # Will be populated from cache during agent execution
         'version_name': 'v1',
         'restrictions': {}
     }

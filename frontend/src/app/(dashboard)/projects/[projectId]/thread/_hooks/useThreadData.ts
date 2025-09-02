@@ -12,6 +12,7 @@ interface UseThreadDataReturn {
   setMessages: React.Dispatch<React.SetStateAction<UnifiedMessage[]>>;
   project: Project | null;
   sandboxId: string | null;
+  setSandboxId: React.Dispatch<React.SetStateAction<string | null>>;
   projectName: string;
   agentRunId: string | null;
   setAgentRunId: React.Dispatch<React.SetStateAction<string | null>>;
@@ -77,6 +78,10 @@ export function useThreadData(threadId: string, projectId: string): UseThreadDat
             setSandboxId(projectQuery.data.sandbox);
           } else if (projectQuery.data.sandbox?.id) {
             setSandboxId(projectQuery.data.sandbox.id);
+          } else {
+            // If no sandbox exists yet, use project_id as the identifier
+            // The backend will create a sandbox on-demand when files are uploaded
+            setSandboxId(projectQuery.data.project_id);
           }
 
           setProjectName(projectQuery.data.name || '');
@@ -234,6 +239,7 @@ export function useThreadData(threadId: string, projectId: string): UseThreadDat
     setMessages,
     project,
     sandboxId,
+    setSandboxId, // Export setSandboxId function
     projectName,
     agentRunId,
     setAgentRunId,

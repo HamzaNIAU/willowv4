@@ -249,8 +249,8 @@ export function FileAttachment({
             ? (customStyle as any)['--attachment-height'] as string
             : '54px';
 
-        // Show loading state for images
-        if (imageLoading && sandboxId) {
+        // Show loading state for images (but not if we have a localPreviewUrl)
+        if (imageLoading && sandboxId && !localPreviewUrl) {
             return (
                 <button
                     onClick={handleClick}
@@ -275,8 +275,8 @@ export function FileAttachment({
             );
         }
 
-        // Check for errors
-        if (imageError || hasError) {
+        // Check for errors (but not if we have a localPreviewUrl)
+        if ((imageError || hasError) && !localPreviewUrl) {
             return (
                 <button
                     onClick={handleClick}
@@ -322,7 +322,7 @@ export function FileAttachment({
                 title={filename}
             >
                 <img
-                    src={sandboxId && session?.access_token ? imageUrl : (fileUrl || '')}
+                    src={localPreviewUrl || (sandboxId && session?.access_token && imageUrl) || fileUrl || ''}
                     alt={filename}
                     className={cn(
                         "max-h-full", // Respect parent height constraint

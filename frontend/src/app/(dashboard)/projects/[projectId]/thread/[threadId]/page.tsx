@@ -91,6 +91,7 @@ export default function ThreadPage({
     setMessages,
     project,
     sandboxId,
+    setSandboxId,
     projectName,
     agentRunId,
     setAgentRunId,
@@ -494,7 +495,7 @@ export default function ThreadPage({
   // SEO title update
   useEffect(() => {
     if (projectName) {
-      document.title = `${projectName} | Kortix Suna`;
+      document.title = `${projectName} | Rzvi Willow`;
 
       const metaDescription = document.querySelector(
         'meta[name="description"]',
@@ -502,13 +503,13 @@ export default function ThreadPage({
       if (metaDescription) {
         metaDescription.setAttribute(
           'content',
-          `${projectName} - Interactive agent conversation powered by Kortix Suna`,
+          `${projectName} - Interactive agent conversation powered by Rzvi Willow`,
         );
       }
 
       const ogTitle = document.querySelector('meta[property="og:title"]');
       if (ogTitle) {
-        ogTitle.setAttribute('content', `${projectName} | Kortix Suna`);
+        ogTitle.setAttribute('content', `${projectName} | Rzvi Willow`);
       }
 
       const ogDescription = document.querySelector(
@@ -721,6 +722,7 @@ export default function ThreadPage({
               autoFocus={!isLoading}
               onFileBrowse={handleOpenFileViewer}
               sandboxId={sandboxId || undefined}
+              setSandboxId={setSandboxId}
               messages={messages}
               agentName={agent && agent.name}
               selectedAgentId={selectedAgentId}

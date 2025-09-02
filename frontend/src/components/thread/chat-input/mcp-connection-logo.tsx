@@ -19,6 +19,15 @@ import {
   Video,
 } from 'lucide-react';
 
+// Custom YouTube SVG component for fallback
+const YoutubeSvg = ({ className }: { className?: string }) => (
+  <img 
+    src="/platforms/youtube.svg" 
+    alt="YouTube"
+    className={className}
+  />
+);
+
 interface MCPConnectionLogoProps {
   mcp: any;
   className?: string;
@@ -49,7 +58,7 @@ export const MCPConnectionLogo: React.FC<MCPConnectionLogoProps> = ({ mcp, class
     const name = (mcp.name || '').toLowerCase();
     
     // Social media platforms
-    if (name.includes('youtube')) return Youtube;
+    if (name.includes('youtube')) return YoutubeSvg;
     if (name.includes('instagram')) return Instagram;
     if (name.includes('twitter') || name.includes('x')) return Twitter;
     if (name.includes('facebook')) return Facebook;

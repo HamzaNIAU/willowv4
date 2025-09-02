@@ -151,7 +151,7 @@ async def get_flag_details(key: str) -> Optional[Dict[str, str]]:
 # Feature Flags
 
 # Custom agents feature flag
-custom_agents = True
+custom_agents = False  # Disabled - only default Willow agent is available
 
 # MCP module feature flag  
 mcp_module = True
@@ -174,8 +174,17 @@ pipedream = True
 # Credentials API feature flag
 credentials_api = True
 
-# Suna default agent feature flag
+# Willow default agent feature flag
 suna_default_agent = True
+
+# Default agent feature flag (for suna-default virtual agent)
+default_agent = True
+
+# Hide agent creation UI (set to False to show agents menu)
+hide_agent_creation = False
+
+# Agent marketplace feature flag  
+agent_marketplace = True
 
 
 

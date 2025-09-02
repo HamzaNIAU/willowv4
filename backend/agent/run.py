@@ -2,6 +2,7 @@ import os
 import json
 import asyncio
 import datetime
+import jwt
 from typing import Optional, Dict, List, Any, AsyncGenerator
 from dataclasses import dataclass
 
@@ -35,7 +36,7 @@ from agent.tools.task_list_tool import TaskListTool
 from agentpress.tool import SchemaType
 from agent.tools.sb_sheets_tool import SandboxSheetsTool
 from agent.tools.sb_web_dev_tool import SandboxWebDevTool
-from agent.tools.youtube_tool import YouTubeTool
+from agent.tools.youtube_complete_mcp_tool import YouTubeTool
 
 load_dotenv()
 
@@ -58,12 +59,13 @@ class AgentConfig:
 
 
 class ToolManager:
-    def __init__(self, thread_manager: ThreadManager, project_id: str, thread_id: str, user_id: Optional[str] = None, agent_id: Optional[str] = None):
+    def __init__(self, thread_manager: ThreadManager, project_id: str, thread_id: str, user_id: Optional[str] = None, agent_id: Optional[str] = None, agent_config: Optional[dict] = None):
         self.thread_manager = thread_manager
         self.project_id = project_id
         self.thread_id = thread_id
         self.user_id = user_id
         self.agent_id = agent_id
+        self.agent_config = agent_config
     
     async def register_all_tools(self, agent_id: Optional[str] = None, disabled_tools: Optional[List[str]] = None):
         """Register all available tools by default, with optional exclusions.
@@ -92,7 +94,16 @@ class ToolManager:
         # Browser tool
         self._register_browser_tool(disabled_tools)
         
-        logger.debug(f"Tool registration complete. Registered tools: {list(self.thread_manager.tool_registry.tools.keys())}")
+        registered_tools = list(self.thread_manager.tool_registry.tools.keys())
+        logger.info(f"🔧 Tool registration complete. Total tools: {len(registered_tools)}")
+        logger.info(f"🔧 Registered tools: {registered_tools}")
+        
+        # Specifically check for YouTube tools
+        youtube_tools = [tool for tool in registered_tools if 'youtube' in tool.lower()]
+        if youtube_tools:
+            logger.info(f"✅ YouTube tools registered: {youtube_tools}")
+        else:
+            logger.warning("⚠️  No YouTube tools found in registry")
         
         # Return YouTube channels for use in system prompt
         return getattr(self, 'youtube_channels', [])
@@ -130,68 +141,140 @@ class ToolManager:
             self.thread_manager.add_tool(DataProvidersTool)
             logger.debug("Registered data_providers_tool")
         
-        # Register YouTube tool if not disabled
+        # Register YouTube sandbox tool if not disabled
         if 'youtube_tool' not in disabled_tools:
-            # Pass necessary parameters for toggle checking
-            from services.supabase import DBConnection
-            from youtube_mcp.channels import YouTubeChannelService
-            from services.mcp_toggles import MCPToggleService
-            db = DBConnection()
-            
-            # Load connected YouTube channels for the user
+            # Use pre-computed YouTube channels from agent config or fallback to database
             channel_ids = []
             channel_metadata = []
-            try:
-                if self.user_id and self.agent_id:
-                    channel_service = YouTubeChannelService(db)
-                    toggle_service = MCPToggleService(db)
-                    
-                    # Get all connected channels first
-                    all_channels = await channel_service.get_user_channels(self.user_id)
-                    
-                    # Filter to only enabled channels via MCP toggles
-                    enabled_channels = []
-                    for channel in all_channels:
-                        mcp_id = f"social.youtube.{channel['id']}"
-                        is_enabled = await toggle_service.is_enabled(self.agent_id, self.user_id, mcp_id)
-                        if is_enabled:
-                            enabled_channels.append(channel)
-                            logger.info(f"YouTube channel {channel['name']} ({channel['id']}) is enabled")
+            db = None  # Initialize db variable
+            
+            # Check if we have pre-computed channels from agent config
+            logger.debug(f"Checking for pre-computed channels - agent_config exists: {self.agent_config is not None}, agent_id: {self.agent_id}")
+            if self.agent_config:
+                logger.debug(f"Agent config keys: {list(self.agent_config.keys())}")
+                if 'youtube_channels' in self.agent_config:
+                    logger.debug(f"Found 'youtube_channels' key in agent_config")
+                else:
+                    logger.debug(f"No 'youtube_channels' key in agent_config")
+            
+            if self.agent_config and 'youtube_channels' in self.agent_config:
+                channel_metadata = self.agent_config['youtube_channels']
+                channel_ids = [channel['id'] for channel in channel_metadata]
+                if channel_ids:
+                    logger.info(f"✅ Using pre-computed YouTube channels from agent config: {len(channel_ids)} channels for agent {self.agent_id}")
+                    for channel in channel_metadata:
+                        logger.debug(f"   - Pre-computed channel: {channel.get('name')} ({channel.get('id')})")
+                else:
+                    logger.info(f"⚠️ Pre-computed channels list is empty in agent config for agent {self.agent_id}")
+            else:
+                # Fallback to database fetch (legacy behavior)
+                logger.warning(f"No pre-computed YouTube channels found in agent config, falling back to database fetch")
+                from services.supabase import DBConnection
+                from youtube_mcp.channels import YouTubeChannelService
+                from services.mcp_toggles import MCPToggleService
+                db = DBConnection()
+                
+                try:
+                    if self.user_id and self.agent_id:
+                        channel_service = YouTubeChannelService(db)
+                        toggle_service = MCPToggleService(db)
+                        
+                        # Get all connected channels first
+                        all_channels = await channel_service.get_user_channels(self.user_id)
+                        
+                        # Filter to only enabled channels via MCP toggles
+                        enabled_channels = []
+                        for channel in all_channels:
+                            mcp_id = f"social.youtube.{channel['id']}"
+                            is_enabled = await toggle_service.is_enabled(self.agent_id, self.user_id, mcp_id)
+                            if is_enabled:
+                                enabled_channels.append(channel)
+                                logger.info(f"YouTube channel {channel['name']} ({channel['id']}) is enabled (fallback)")
+                            else:
+                                logger.info(f"YouTube channel {channel['name']} ({channel['id']}) is disabled (fallback)")
+                        
+                        channel_ids = [channel['id'] for channel in enabled_channels]
+                        channel_metadata = enabled_channels
+                        
+                        if channel_ids:
+                            logger.info(f"Loaded {len(channel_ids)} enabled YouTube channels from database fallback")
                         else:
-                            logger.info(f"YouTube channel {channel['name']} ({channel['id']}) is disabled")
-                    
-                    channel_ids = [channel['id'] for channel in enabled_channels]
-                    channel_metadata = enabled_channels  # Store only enabled channels
-                    
-                    if channel_ids:
-                        logger.info(f"Loaded {len(channel_ids)} enabled YouTube channels for agent {self.agent_id}: {[c['name'] for c in enabled_channels]}")
-                    else:
-                        logger.info(f"No YouTube channels are enabled for agent {self.agent_id}")
-                elif self.user_id:
-                    # No agent_id, load all channels (backward compatibility)
-                    channel_service = YouTubeChannelService(db)
-                    channels = await channel_service.get_user_channels(self.user_id)
-                    channel_ids = [channel['id'] for channel in channels]
-                    channel_metadata = channels
-                    if channel_ids:
-                        logger.info(f"Loaded {len(channel_ids)} YouTube channels for user {self.user_id} (no agent filtering)")
-            except Exception as e:
-                logger.warning(f"Could not load YouTube channels: {e}")
+                            logger.info(f"No YouTube channels are enabled for agent {self.agent_id} (fallback)")
+                    elif self.user_id:
+                        # No agent_id, but still need to filter by toggle state
+                        # Use a default agent_id or skip toggle filtering for now
+                        logger.warning(f"No agent_id provided for user {self.user_id} - toggle filtering may not work properly")
+                        channel_service = YouTubeChannelService(db)
+                        channels = await channel_service.get_user_channels(self.user_id)
+                        
+                        # If we have agent_config from cache, try to get agent_id from it
+                        fallback_agent_id = None
+                        if self.agent_config and 'agent_id' in self.agent_config:
+                            fallback_agent_id = self.agent_config['agent_id']
+                            logger.info(f"Found agent_id in agent_config for toggle filtering: {fallback_agent_id}")
+                        
+                        if fallback_agent_id:
+                            # Apply toggle filtering with discovered agent_id
+                            toggle_service = MCPToggleService(db)
+                            enabled_channels = []
+                            for channel in channels:
+                                mcp_id = f"social.youtube.{channel['id']}"
+                                is_enabled = await toggle_service.is_enabled(fallback_agent_id, self.user_id, mcp_id)
+                                if is_enabled:
+                                    enabled_channels.append(channel)
+                                    logger.info(f"YouTube channel {channel['name']} ({channel['id']}) is enabled (fallback with discovered agent_id)")
+                                else:
+                                    logger.info(f"YouTube channel {channel['name']} ({channel['id']}) is disabled (fallback with discovered agent_id)")
+                            
+                            channel_ids = [channel['id'] for channel in enabled_channels]
+                            channel_metadata = enabled_channels
+                            if channel_ids:
+                                logger.info(f"Loaded {len(channel_ids)} enabled YouTube channels for user {self.user_id} (fallback with toggle filtering)")
+                            else:
+                                logger.info(f"No YouTube channels are enabled for user {self.user_id} (fallback with toggle filtering)")
+                        else:
+                            # No agent_id available - load all channels (legacy behavior)
+                            logger.warning(f"No agent_id available for toggle filtering - loading all channels for user {self.user_id}")
+                            channel_ids = [channel['id'] for channel in channels]
+                            channel_metadata = channels
+                            if channel_ids:
+                                logger.info(f"Loaded {len(channel_ids)} YouTube channels for user {self.user_id} (no agent filtering, legacy fallback)")
+                except Exception as e:
+                    logger.warning(f"Could not load YouTube channels from database fallback: {e}")
+            
+            # Ensure db is available for YouTubeTool (create if not already created)
+            if db is None:
+                from services.supabase import DBConnection
+                db = DBConnection()
             
             # Store channel metadata for later use in system prompt
             self.youtube_channels = channel_metadata
             
+            # Create JWT token for YouTube tool API calls
+            jwt_secret = os.getenv("SUPABASE_JWT_SECRET", "")
+            jwt_token = None
+            if jwt_secret and self.user_id:
+                payload = {
+                    "sub": self.user_id,
+                    "user_id": self.user_id,
+                    "role": "authenticated"
+                }
+                jwt_token = jwt.encode(payload, jwt_secret, algorithm="HS256")
+                logger.debug(f"Created JWT token for YouTube tool")
+            
+            # Register complete YouTube MCP tool (preserves all functionality)
+            logger.info(f"🎬 Registering Complete YouTube MCP Tool for agent {self.agent_id}")
             self.thread_manager.add_tool(
-                YouTubeTool, 
+                YouTubeTool,
                 user_id=self.user_id or "",
-                channel_ids=channel_ids,  # Pass connected channel IDs
-                thread_manager=self.thread_manager,
+                channel_ids=channel_ids,
+                channel_metadata=channel_metadata,
+                jwt_token=jwt_token,
                 agent_id=self.agent_id,
-                db=db,
-                thread_id=self.thread_id,
-                project_id=self.project_id
+                thread_id=self.thread_id
+                # MCP pattern - no sandbox dependencies
             )
-            logger.debug(f"Registered youtube_tool with {len(channel_ids)} connected channels")
+            logger.info(f"✅ Successfully registered Complete YouTube MCP Tool with {len(channel_ids)} channels")
     
     def _register_agent_builder_tools(self, agent_id: str, disabled_tools: List[str]):
         """Register agent builder tools."""
@@ -572,13 +655,14 @@ class AgentRunner:
         elif self.config.is_agent_builder and self.config.target_agent_id:
             agent_id = self.config.target_agent_id
         
-        # Create tool manager with user_id and agent_id for toggle support
+        # Create tool manager with user_id, agent_id, and agent_config for pre-computed data
         tool_manager = ToolManager(
             self.thread_manager, 
             self.config.project_id, 
             self.config.thread_id,
             user_id=getattr(self, 'user_id', self.account_id),  # Use real user_id, fallback to account_id
-            agent_id=agent_id
+            agent_id=agent_id,
+            agent_config=self.config.agent_config  # Pass agent config for pre-computed channels
         )
         
         # Convert agent config to disabled tools list

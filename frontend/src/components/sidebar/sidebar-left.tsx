@@ -6,7 +6,7 @@ import { Bot, Menu, Store, Plus, Zap, ChevronRight, Loader2, Share2 } from 'luci
 
 import { NavAgents } from '@/components/sidebar/nav-agents';
 import { NavUserWithTeams } from '@/components/sidebar/nav-user-with-teams';
-import { KortixLogo } from '@/components/sidebar/kortix-logo';
+import { WillowLogo } from '@/components/sidebar/willow-logo';
 import { CTACard } from '@/components/sidebar/cta';
 import {
   Sidebar,
@@ -88,9 +88,10 @@ export function SidebarLeft({
 
   const pathname = usePathname();
   const searchParams = useSearchParams();
-  const { flags, loading: flagsLoading } = useFeatureFlags(['custom_agents', 'agent_marketplace']);
+  const { flags, loading: flagsLoading } = useFeatureFlags(['custom_agents', 'agent_marketplace', 'hide_agent_creation']);
   const customAgentsEnabled = flags.custom_agents;
   const marketplaceEnabled = flags.agent_marketplace;
+  const hideAgentCreation = flags.hide_agent_creation;
   const [showNewAgentDialog, setShowNewAgentDialog] = useState(false);
 
   // Close mobile menu on page navigation
@@ -150,7 +151,7 @@ export function SidebarLeft({
       <SidebarHeader className="px-2 py-2">
         <div className="flex h-[40px] items-center px-1 relative">
           <Link href="/dashboard" className="flex-shrink-0" onClick={() => isMobile && setOpenMobile(false)}>
-            <KortixLogo size={24} />
+            <WillowLogo size={24} />
           </Link>
           {state !== 'collapsed' && (
             <div className="ml-2 transition-all duration-200 ease-in-out whitespace-nowrap">
@@ -200,7 +201,7 @@ export function SidebarLeft({
               </Link>
             </SidebarMenuItem>
           </SidebarMenu>
-          {!flagsLoading && customAgentsEnabled && (
+          {!flagsLoading && customAgentsEnabled && !hideAgentCreation && (
             <SidebarMenu>
               <Collapsible
                 defaultOpen={pathname?.includes('/agents')}
@@ -281,10 +282,12 @@ export function SidebarLeft({
         <NavUserWithTeams user={user} />
       </SidebarFooter>
       <SidebarRail />
-      <NewAgentDialog 
-        open={showNewAgentDialog} 
-        onOpenChange={setShowNewAgentDialog}
-      />
+      {!hideAgentCreation && (
+        <NewAgentDialog 
+          open={showNewAgentDialog} 
+          onOpenChange={setShowNewAgentDialog}
+        />
+      )}
     </Sidebar>
   );
 }

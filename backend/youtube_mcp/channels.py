@@ -98,16 +98,21 @@ class YouTubeChannelService:
         return False
     
     async def deactivate_channel(self, user_id: str, channel_id: str) -> bool:
-        """Deactivate a YouTube channel (soft delete)"""
+        """SMART DEACTIVATION: Mark for re-auth instead of disconnecting (preserves user connections)"""
         client = await self.db.client
         
+        logger.warning(f"🔄 SMART DEACTIVATION: Marking channel {channel_id} for re-auth instead of disconnecting")
+        
+        # FIXED BUG: Don't set is_active=False, just mark for re-authentication
         result = await client.table("youtube_channels").update({
-            "is_active": False,
+            "needs_reauth": True,  # Mark for re-auth instead of disconnecting
+            "last_refresh_error": "Channel marked for re-authentication due to system issues",
             "updated_at": datetime.now(timezone.utc).isoformat(),
+            # is_active stays TRUE - preserve connection!
         }).eq("user_id", user_id).eq("id", channel_id).execute()
         
         if result.data:
-            logger.info(f"Deactivated channel {channel_id} for user {user_id}")
+            logger.info(f"✅ Smart deactivation: Channel {channel_id} marked for re-auth (connection preserved)")
             return True
         
         return False

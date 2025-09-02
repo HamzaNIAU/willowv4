@@ -19,6 +19,11 @@ class MCPToggleService:
         Returns a dict mapping mcp_id to enabled state
         """
         try:
+            # Special handling for suna-default virtual agent
+            if agent_id == "suna-default":
+                # Return empty toggles for virtual agent (all MCPs use defaults)
+                return {}
+            
             client = await self.db.client
             
             result = await client.table("agent_mcp_toggles").select("*").eq(
@@ -50,6 +55,12 @@ class MCPToggleService:
         Uses upsert to create or update
         """
         try:
+            # Special handling for suna-default virtual agent
+            if agent_id == "suna-default":
+                # Cannot set toggles for virtual agent
+                logger.warning(f"Attempted to set toggle for virtual agent suna-default")
+                return False
+            
             client = await self.db.client
             
             # Upsert the toggle state
@@ -61,7 +72,20 @@ class MCPToggleService:
                 "updated_at": datetime.utcnow().isoformat()
             }, on_conflict="agent_id,user_id,mcp_id").execute()
             
-            return len(result.data) > 0
+            success = len(result.data) > 0
+            
+            # Invalidate YouTube channel cache if this is a YouTube toggle
+            if success and mcp_id.startswith("social.youtube."):
+                try:
+                    from services.youtube_channel_cache import YouTubeChannelCacheService
+                    cache_service = YouTubeChannelCacheService(self.db)
+                    await cache_service.handle_toggle_change(user_id, agent_id, mcp_id, enabled)
+                    logger.debug(f"Invalidated YouTube channel cache for toggle change: {mcp_id} -> {enabled}")
+                except Exception as cache_error:
+                    logger.warning(f"Failed to invalidate YouTube channel cache: {cache_error}")
+                    # Don't fail the toggle operation if cache invalidation fails
+            
+            return success
             
         except Exception as e:
             logger.error(f"Failed to set MCP toggle: {e}")
@@ -89,9 +113,30 @@ class MCPToggleService:
             ).single().execute()
             
             if result.data:
-                return result.data["enabled"]
+                is_enabled = result.data["enabled"]
+                logger.debug(f"Toggle found for {mcp_id}: {is_enabled} (agent: {agent_id})")
+                return is_enabled
             
-            # Default to disabled for social media MCPs (security first)
+            # Special handling for YouTube channels - auto-enable if channel is connected
+            if mcp_id.startswith("social.youtube."):
+                channel_id = mcp_id.replace("social.youtube.", "")
+                # Check if this YouTube channel is actually connected for the user
+                channel_result = await client.table("youtube_channels").select("id").eq(
+                    "user_id", user_id
+                ).eq("id", channel_id).eq("is_active", True).execute()
+                
+                if channel_result.data:
+                    # Channel exists and is active - auto-enable it
+                    logger.debug(f"Auto-enabling connected YouTube channel {channel_id} for agent {agent_id}")
+                    # Create the toggle record as enabled for future lookups
+                    await self.set_toggle(agent_id, user_id, mcp_id, True)
+                    return True
+                else:
+                    # Channel doesn't exist - keep disabled
+                    logger.debug(f"YouTube channel {channel_id} not connected, keeping disabled")
+                    return False
+            
+            # Default to disabled for other social media MCPs (security first)  
             if mcp_id.startswith("social."):
                 logger.debug(f"No toggle found for social MCP {mcp_id}, defaulting to disabled")
                 return False
@@ -100,6 +145,30 @@ class MCPToggleService:
             return True
             
         except Exception as e:
+            # If no record exists or error, check if it's a YouTube channel
+            if mcp_id.startswith("social.youtube."):
+                try:
+                    client = await self.db.client
+                    channel_id = mcp_id.replace("social.youtube.", "")
+                    # Check if this YouTube channel is actually connected for the user
+                    channel_result = await client.table("youtube_channels").select("id").eq(
+                        "user_id", user_id
+                    ).eq("id", channel_id).eq("is_active", True).execute()
+                    
+                    if channel_result.data:
+                        # Channel exists and is active - auto-enable it
+                        logger.debug(f"Auto-enabling connected YouTube channel {channel_id} for agent {agent_id} (exception path)")
+                        # Create the toggle record as enabled for future lookups
+                        await self.set_toggle(agent_id, user_id, mcp_id, True)
+                        return True
+                    else:
+                        # Channel doesn't exist - keep disabled
+                        logger.debug(f"YouTube channel {channel_id} not connected, keeping disabled (exception path)")
+                        return False
+                except Exception as inner_e:
+                    logger.error(f"Error checking YouTube channel connection: {inner_e}")
+                    return False
+            
             # If no record exists or error, check if it's a social MCP
             if mcp_id.startswith("social."):
                 logger.debug(f"No toggle found for social MCP {mcp_id}, defaulting to disabled")
@@ -118,8 +187,10 @@ class MCPToggleService:
         """
         Get list of enabled MCP IDs for an agent and user
         Optionally filter by MCP type (e.g., 'social.youtube')
+        For YouTube channels, auto-enables connected channels that don't have explicit toggles
         """
         try:
+            logger.info(f"[MCPToggleService] get_enabled_mcps called with agent_id={agent_id}, user_id={user_id}, mcp_type={mcp_type}")
             client = await self.db.client
             
             query = client.table("agent_mcp_toggles").select("mcp_id").eq(
@@ -135,8 +206,39 @@ class MCPToggleService:
                 query = query.like("mcp_id", f"{mcp_type}%")
             
             result = await query.execute()
+            enabled_mcp_ids = [item["mcp_id"] for item in result.data]
+            logger.info(f"[MCPToggleService] Found {len(enabled_mcp_ids)} enabled MCPs from database: {enabled_mcp_ids}")
             
-            return [item["mcp_id"] for item in result.data]
+            # Special handling for YouTube channels - auto-enable connected channels
+            if mcp_type == "social.youtube":
+                # Get all connected YouTube channels for this user
+                channels_result = await client.table("youtube_channels").select("id").eq(
+                    "user_id", user_id
+                ).eq("is_active", True).execute()
+                
+                if channels_result.data:
+                    # Check each connected channel and auto-enable if no toggle exists
+                    for channel in channels_result.data:
+                        channel_id = channel["id"]
+                        mcp_id = f"social.youtube.{channel_id}"
+                        
+                        # If this channel isn't already in our enabled list, check if we should auto-enable
+                        if mcp_id not in enabled_mcp_ids:
+                            # Check if a toggle record exists
+                            toggle_result = await client.table("agent_mcp_toggles").select("enabled").eq(
+                                "agent_id", agent_id
+                            ).eq("user_id", user_id).eq("mcp_id", mcp_id).execute()
+                            
+                            if not toggle_result.data:
+                                # No toggle exists for this connected channel - auto-enable it
+                                logger.info(f"Auto-enabling connected YouTube channel {channel_id} for agent {agent_id}")
+                                success = await self.set_toggle(agent_id, user_id, mcp_id, True)
+                                if success:
+                                    enabled_mcp_ids.append(mcp_id)
+                
+                logger.info(f"[MCPToggleService] Final enabled YouTube channels for agent {agent_id}: {enabled_mcp_ids}")
+            
+            return enabled_mcp_ids
             
         except Exception as e:
             logger.error(f"Failed to get enabled MCPs: {e}")
@@ -297,3 +399,56 @@ class MCPToggleService:
         except Exception as e:
             logger.error(f"Failed to get channel toggle status: {e}")
             return {}
+    
+    async def auto_enable_connected_channels(self, user_id: str) -> int:
+        """
+        Auto-enable all connected YouTube channels for all user's agents.
+        This is a utility method to help users who have the old disabled defaults.
+        
+        Returns:
+            Number of channel-agent pairs that were enabled
+        """
+        try:
+            client = await self.db.client
+            
+            # Get all connected YouTube channels for this user
+            channels_result = await client.table("youtube_channels").select("id").eq(
+                "user_id", user_id
+            ).eq("is_active", True).execute()
+            
+            if not channels_result.data:
+                return 0
+            
+            # Get all user's agents
+            agents_result = await client.table("agents").select("agent_id").eq(
+                "account_id", user_id
+            ).execute()
+            
+            if not agents_result.data:
+                return 0
+            
+            enabled_count = 0
+            for channel in channels_result.data:
+                channel_id = channel["id"]
+                mcp_id = f"social.youtube.{channel_id}"
+                
+                for agent in agents_result.data:
+                    agent_id = agent["agent_id"]
+                    
+                    # Enable the channel for this agent
+                    success = await self.set_toggle(
+                        agent_id=agent_id,
+                        user_id=user_id,
+                        mcp_id=mcp_id,
+                        enabled=True
+                    )
+                    
+                    if success:
+                        enabled_count += 1
+            
+            logger.info(f"Auto-enabled {enabled_count} YouTube channel-agent pairs for user {user_id}")
+            return enabled_count
+            
+        except Exception as e:
+            logger.error(f"Failed to auto-enable connected channels: {e}")
+            return 0

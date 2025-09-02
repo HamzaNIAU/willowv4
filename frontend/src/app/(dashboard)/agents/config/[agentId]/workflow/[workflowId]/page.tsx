@@ -14,6 +14,8 @@ import { useAgent } from '@/hooks/react-query/agents/use-agents';
 import { ConditionalStep } from '@/components/agents/workflows/conditional-workflow-builder';
 import { WorkflowBuilder } from '@/components/workflows/workflow-builder';
 import { WorkflowExecutionDialog } from '@/components/workflows/workflow-execution-dialog';
+import { isValidAgentId } from '@/lib/utils/agent-validation';
+import { useFeatureFlag } from '@/lib/feature-flags';
 
 const convertToNestedJSON = (steps: ConditionalStep[]): any[] => {
   let globalOrder = 1;
@@ -228,11 +230,18 @@ export default function WorkflowPage() {
   const agentId = params.agentId as string;
   const workflowId = params.workflowId as string;
 
-  const { data: workflows = [], isLoading: isLoadingWorkflows } = useAgentWorkflows(agentId);
+  const { enabled: customAgentsEnabled } = useFeatureFlag('custom_agents');
+  
+  // Validate agent ID before fetching
+  const shouldFetchAgent = isValidAgentId(agentId) && (
+    agentId === 'suna-default' || customAgentsEnabled
+  );
+  
+  const { data: workflows = [], isLoading: isLoadingWorkflows } = useAgentWorkflows(shouldFetchAgent ? agentId : '');
   const createWorkflowMutation = useCreateAgentWorkflow();
   const updateWorkflowMutation = useUpdateAgentWorkflow();
-  const { data: agentTools, isLoading: isLoadingTools } = useAgentTools(agentId);
-  const { data: agent, refetch: refetchAgent } = useAgent(agentId);
+  const { data: agentTools, isLoading: isLoadingTools } = useAgentTools(shouldFetchAgent ? agentId : '');
+  const { data: agent, refetch: refetchAgent } = useAgent(shouldFetchAgent ? agentId : '');
 
   const isEditing = !!workflowId;
 

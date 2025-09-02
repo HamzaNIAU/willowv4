@@ -132,6 +132,17 @@ def initialize(database: DBConnection):
 
 
 async def verify_agent_access(agent_id: str, user_id: str):
+    # Special handling for suna-default virtual agent
+    if agent_id == "suna-default":
+        from flags.flags import is_enabled
+        if await is_enabled("default_agent"):
+            return  # Allow access to suna-default for all users when feature is enabled
+        else:
+            raise HTTPException(status_code=404, detail="Default agent not enabled")
+    
+    if db is None:
+        raise HTTPException(status_code=500, detail="Database not initialized")
+    
     client = await db.client
     result = await client.table('agents').select('agent_id').eq('agent_id', agent_id).eq('account_id', user_id).execute()
     
@@ -235,6 +246,13 @@ async def get_agent_triggers(
     if not await is_enabled("agent_triggers"):
         raise HTTPException(status_code=403, detail="Agent triggers are not enabled")
     
+    # Return empty triggers for suna-default virtual agent
+    if agent_id == "suna-default":
+        if await is_enabled("default_agent"):
+            return []
+        else:
+            raise HTTPException(status_code=404, detail="Default agent not enabled")
+    
     await verify_agent_access(agent_id, user_id)
     
     try:
@@ -277,6 +295,13 @@ async def get_agent_upcoming_runs(
     """Get upcoming scheduled runs for agent triggers"""
     if not await is_enabled("agent_triggers"):
         raise HTTPException(status_code=403, detail="Agent triggers are not enabled")
+    
+    # Return empty upcoming runs for suna-default virtual agent
+    if agent_id == "suna-default":
+        if await is_enabled("default_agent"):
+            return UpcomingRunsResponse(upcoming_runs=[], total_count=0)
+        else:
+            raise HTTPException(status_code=404, detail="Default agent not enabled")
     
     await verify_agent_access(agent_id, user_id)
     
@@ -351,7 +376,11 @@ async def create_agent_trigger(
     """Create a new trigger for an agent"""
     if not await is_enabled("agent_triggers"):
         raise HTTPException(status_code=403, detail="Agent triggers are not enabled")
-        
+    
+    # Block trigger creation for suna-default virtual agent
+    if agent_id == "suna-default":
+        raise HTTPException(status_code=403, detail="Cannot create triggers for the default agent")
+    
     await verify_agent_access(agent_id, user_id)
     
     try:
@@ -649,6 +678,14 @@ async def get_agent_workflows(
     user_id: str = Depends(get_current_user_id_from_jwt)
 ):
     """Get workflows for an agent"""
+    # Return empty workflows for suna-default virtual agent
+    if agent_id == "suna-default":
+        from flags.flags import is_enabled
+        if await is_enabled("default_agent"):
+            return []
+        else:
+            raise HTTPException(status_code=404, detail="Default agent not enabled")
+    
     await verify_agent_access(agent_id, user_id)
     
     client = await db.client
@@ -664,6 +701,10 @@ async def create_agent_workflow(
     user_id: str = Depends(get_current_user_id_from_jwt)
 ):
     """Create a new workflow for an agent"""
+    # Block workflow creation for suna-default virtual agent
+    if agent_id == "suna-default":
+        raise HTTPException(status_code=403, detail="Cannot create workflows for the default agent")
+    
     await verify_agent_access(agent_id, user_id)
     
     try:
@@ -698,6 +739,10 @@ async def update_agent_workflow(
     user_id: str = Depends(get_current_user_id_from_jwt)
 ):
     """Update a workflow"""
+    # Block workflow updates for suna-default virtual agent
+    if agent_id == "suna-default":
+        raise HTTPException(status_code=403, detail="Cannot update workflows for the default agent")
+    
     await verify_agent_access(agent_id, user_id)
     
     client = await db.client
@@ -739,6 +784,10 @@ async def delete_agent_workflow(
     workflow_id: str,
     user_id: str = Depends(get_current_user_id_from_jwt)
 ):
+    # Block workflow deletion for suna-default virtual agent
+    if agent_id == "suna-default":
+        raise HTTPException(status_code=403, detail="Cannot delete workflows for the default agent")
+    
     await verify_agent_access(agent_id, user_id)
     
     client = await db.client
@@ -761,6 +810,10 @@ async def execute_agent_workflow(
     execution_data: WorkflowExecuteRequest,
     user_id: str = Depends(get_current_user_id_from_jwt)
 ):
+    # Block workflow execution for suna-default virtual agent
+    if agent_id == "suna-default":
+        raise HTTPException(status_code=403, detail="Cannot execute workflows for the default agent")
+    
     await verify_agent_access(agent_id, user_id)
     
     client = await db.client

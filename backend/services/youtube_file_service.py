@@ -5,6 +5,7 @@ import hashlib
 import secrets
 import asyncio
 import json
+import base64
 from typing import Dict, Any, Optional, List, Tuple
 from datetime import datetime, timedelta, timezone
 import mimetypes
@@ -326,16 +327,14 @@ class YouTubeFileService:
             "id": reference_id,
             "user_id": user_id,
             "file_name": file_name,
+            "file_data": base64.b64encode(file_data).decode('utf-8'),  # Base64 encode for JSON serialization
             "file_size": file_size,
             "mime_type": mime_type,
+            "file_type": "video",
             "checksum": checksum,
             "expires_at": expires_at.isoformat(),
-            "is_temporary": True
+            "platform": "youtube"
         }
-        
-        # Store the actual file data (in production, this would be in object storage)
-        # For now, we'll store a reference to where the file would be stored
-        video_ref_data["file_path"] = f"/tmp/youtube_videos/{reference_id}"
         
         result = await client.table("video_file_references").insert(video_ref_data).execute()
         
@@ -347,11 +346,13 @@ class YouTubeFileService:
             "user_id": user_id,
             "reference_id": reference_id,
             "file_name": file_name,
-            "file_size": self.format_file_size(file_size),
+            "file_size": file_size,  # Store as integer, not formatted string
             "file_type": "video",
             "mime_type": mime_type,
-            "status": "pending",
+            "platform": "youtube",
+            "status": "ready",  # Mark as ready since file is uploaded
             "created_at": datetime.now(timezone.utc).isoformat(),
+            "ready_at": datetime.now(timezone.utc).isoformat(),
             "expires_at": expires_at.isoformat()
         }
         
@@ -360,7 +361,7 @@ class YouTubeFileService:
         return {
             "reference_id": reference_id,
             "file_name": file_name,
-            "file_size": self.format_file_size(file_size),
+            "file_size": file_size,  # Return numeric size, not formatted string
             "mime_type": mime_type,
             "expires_at": expires_at.isoformat(),
             "warnings": validation.get("warnings", [])
@@ -400,16 +401,15 @@ class YouTubeFileService:
             "id": reference_id,
             "user_id": user_id,
             "file_name": file_name,
+            "file_data": base64.b64encode(processed_data).decode('utf-8'),  # Base64 encode for JSON serialization
             "file_size": len(processed_data),
             "mime_type": "image/jpeg",  # Always JPEG after processing
+            "file_type": "thumbnail",
             "checksum": checksum,
             "expires_at": expires_at.isoformat(),
-            "is_temporary": True,
+            "platform": "youtube",
             "generated_metadata": metadata  # Store processing metadata
         }
-        
-        # Store the actual file data (in production, this would be in object storage)
-        thumb_ref_data["file_path"] = f"/tmp/youtube_thumbnails/{reference_id}"
         
         result = await client.table("video_file_references").insert(thumb_ref_data).execute()
         
@@ -421,11 +421,13 @@ class YouTubeFileService:
             "user_id": user_id,
             "reference_id": reference_id,
             "file_name": file_name,
-            "file_size": self.format_file_size(len(processed_data)),
+            "file_size": len(processed_data),  # Store as integer, not formatted string
             "file_type": "thumbnail",
             "mime_type": "image/jpeg",
-            "status": "pending",
+            "platform": "youtube",
+            "status": "ready",  # Mark as ready since file is uploaded
             "created_at": datetime.now(timezone.utc).isoformat(),
+            "ready_at": datetime.now(timezone.utc).isoformat(),
             "expires_at": expires_at.isoformat()
         }
         
@@ -434,7 +436,7 @@ class YouTubeFileService:
         return {
             "reference_id": reference_id,
             "file_name": file_name,
-            "file_size": self.format_file_size(len(processed_data)),
+            "file_size": len(processed_data),  # Return numeric size, not formatted string
             "dimensions": metadata["dimensions"],
             "mime_type": "image/jpeg",
             "expires_at": expires_at.isoformat(),
@@ -449,34 +451,44 @@ class YouTubeFileService:
         Returns:
             Dict with 'video' and 'thumbnail' keys
         """
+        logger.info(f"[FileService] Looking for pending uploads for user {user_id}")
         client = await self.db.client
         
-        # Get last 10 pending uploads for the user
+        # Get last 10 ready uploads for the user  
         result = await client.table("upload_references").select("*").eq(
             "user_id", user_id
         ).eq(
-            "status", "pending"
+            "status", "ready"  # Look for ready uploads, not pending
         ).gt(
             "expires_at", datetime.now(timezone.utc).isoformat()
         ).order(
-            "created_at", {"ascending": False}
+            "created_at", desc=True
         ).limit(10).execute()
         
         uploads = result.data if result.data else []
+        logger.info(f"[FileService] Found {len(uploads)} ready uploads in database")
         
         # Find the most recent video and thumbnail
         video = None
         thumbnail = None
         
         for upload in uploads:
+            logger.debug(f"[FileService] Upload: {upload['file_name']} - Type: {upload['file_type']} - Ref: {upload['reference_id']}")
             if upload["file_type"] == "video" and not video:
                 video = upload
+                logger.info(f"[FileService] Found video: {upload['file_name']} (ref: {upload['reference_id']})")
             elif upload["file_type"] == "thumbnail" and not thumbnail:
                 thumbnail = upload
+                logger.info(f"[FileService] Found thumbnail: {upload['file_name']} (ref: {upload['reference_id']})")
             
             # Stop if we found both
             if video and thumbnail:
                 break
+        
+        if not video:
+            logger.warning(f"[FileService] No video found for user {user_id}")
+        if not thumbnail:
+            logger.debug(f"[FileService] No thumbnail found for user {user_id} (optional)")
         
         return {
             "video": video,
@@ -494,28 +506,94 @@ class YouTubeFileService:
     
     async def get_file_data(self, reference_id: str, user_id: str) -> Optional[bytes]:
         """
-        Retrieve file data by reference ID
+        Retrieve file data by reference ID from database
         
-        In production, this would fetch from object storage
-        For now, returns placeholder data
+        Returns the actual binary file data stored in the database
         """
         client = await self.db.client
+        logger.info(f"[FileService] Getting file data for reference_id: {reference_id}")
         
-        # Verify the reference belongs to the user
-        result = await client.table("video_file_references").select("*").eq(
-            "id", reference_id
+        # First check upload_references for metadata
+        upload_ref_result = await client.table("upload_references").select("*").eq(
+            "reference_id", reference_id
         ).eq("user_id", user_id).execute()
         
-        if not result.data:
+        if upload_ref_result.data:
+            logger.info(f"[FileService] Found reference in upload_references table")
+            # upload_references found, but file_data is in video_file_references
+            # Use the reference_id to get the actual file data
+            video_ref_result = await client.table("video_file_references").select("*").eq(
+                "id", reference_id
+            ).eq("user_id", user_id).execute()
+            
+            if video_ref_result.data:
+                logger.info(f"[FileService] Found file data in video_file_references table")
+                file_info = video_ref_result.data[0]
+                file_data = file_info.get("file_data")
+            else:
+                logger.warning(f"[FileService] Reference {reference_id} found in upload_references but no file_data in video_file_references")
+                return None
+        else:
+            # Fallback to old table for backward compatibility
+            logger.info(f"Reference {reference_id} not found in upload_references, trying video_file_references directly")
+            result = await client.table("video_file_references").select("*").eq(
+                "id", reference_id
+            ).eq("user_id", user_id).execute()
+            
+            if not result.data:
+                logger.warning(f"No reference found for {reference_id} in either table")
+                return None
+            
+            file_info = result.data[0]
+            file_data = file_info.get("file_data")
+        
+        if not file_data:
+            logger.warning(f"No file data in reference {reference_id}")
             return None
         
-        # In production, fetch from file_path location
-        # For now, return placeholder
-        file_info = result.data[0]
-        logger.info(f"Would fetch file from: {file_info.get('file_path')}")
+        # Log file data info for debugging
+        logger.info(f"[FileService] Retrieved file_data type: {type(file_data)}, size: {len(file_data) if hasattr(file_data, '__len__') else 'unknown'}")
         
-        # Return empty bytes as placeholder
-        return b""
+        # Handle different data formats (bytes or base64 string)
+        if isinstance(file_data, str):
+            # PostgreSQL BYTEA columns return hex-encoded data through JSON API
+            # Format: \x followed by hex characters
+            if file_data.startswith('\\x'):
+                # Decode from hex first
+                try:
+                    hex_str = file_data[2:]  # Remove \x prefix
+                    # Convert hex to bytes
+                    hex_bytes = bytes.fromhex(hex_str)
+                    # The hex_bytes now contains the base64 string as bytes
+                    base64_str = hex_bytes.decode('utf-8')
+                    logger.info(f"Decoded hex to base64 string: {base64_str[:50]}...")
+                    # Now decode the base64
+                    return base64.b64decode(base64_str)
+                except Exception as e:
+                    logger.error(f"Failed to decode hex-encoded data: {e}")
+                    logger.error(f"Data prefix: {file_data[:100]}")
+                    raise
+            else:
+                # Direct base64 string (shouldn't happen with BYTEA columns)
+                logger.info(f"Retrieved direct base64 string of length {len(file_data)}")
+                try:
+                    return base64.b64decode(file_data)
+                except Exception as e:
+                    logger.error(f"Failed to decode base64 data: {e}")
+                    logger.error(f"Data length: {len(file_data)}")
+                    logger.error(f"First 100 chars: {file_data[:100]}")
+                    raise
+        elif isinstance(file_data, bytes):
+            logger.info(f"[FileService] Retrieved raw bytes data, size: {len(file_data)} bytes")
+            # Validate file data is not empty and has reasonable size
+            if len(file_data) < 100:
+                logger.warning(f"[FileService] File data suspiciously small: {len(file_data)} bytes")
+            elif len(file_data) > 100000000:  # 100MB
+                logger.info(f"[FileService] Large file detected: {len(file_data)} bytes")
+            return file_data
+        else:
+            logger.error(f"Unexpected file data type: {type(file_data)}")
+            return None
     
     async def cleanup_expired_references(self) -> int:
         """
@@ -526,17 +604,24 @@ class YouTubeFileService:
         """
         client = await self.db.client
         
-        # Delete expired upload references
+        # First, update status of expired references to 'expired'
+        await client.table("upload_references").update({
+            "status": "expired"
+        }).lt(
+            "expires_at", datetime.now(timezone.utc).isoformat()
+        ).neq("status", "used").execute()
+        
+        # Delete expired upload references that are not used
         result = await client.table("upload_references").delete().lt(
             "expires_at", datetime.now(timezone.utc).isoformat()
-        ).execute()
+        ).neq("status", "used").execute()
         
         upload_count = len(result.data) if result.data else 0
         
-        # Delete expired video file references
+        # Delete expired video file references that haven't been used
         result = await client.table("video_file_references").delete().lt(
             "expires_at", datetime.now(timezone.utc).isoformat()
-        ).eq("is_temporary", True).execute()
+        ).eq("is_used", False).execute()
         
         file_count = len(result.data) if result.data else 0
         
@@ -948,7 +1033,7 @@ class YouTubeFileService:
         """Prepare video metadata for upload"""
         # Default metadata
         default_title = Path(file_path).stem
-        default_description = f"Uploaded via Kortix on {datetime.now().strftime('%Y-%m-%d')}"
+        default_description = f"Uploaded via Rzvi on {datetime.now(timezone.utc).strftime('%Y-%m-%d')}"
         
         # Merge with provided metadata
         final_metadata = {
@@ -1055,7 +1140,7 @@ class YouTubeFileService:
                 query = query.eq("channel_id", channel_id)
             
             result = await query.order(
-                "uploaded_at", {"ascending": False}
+                "uploaded_at", desc=True
             ).limit(limit).execute()
             
             return result.data if result.data else []

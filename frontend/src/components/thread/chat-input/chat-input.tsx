@@ -12,6 +12,7 @@ import { useAgentSelection } from '@/lib/stores/agent-selection-store';
 
 import { Card, CardContent } from '@/components/ui/card';
 import { handleFiles } from './file-upload-handler';
+import { createClient } from '@/lib/supabase/client';
 import { MessageInput } from './message-input';
 import { AttachmentGroup } from '../attachment-group';
 import { useModelSelection } from './_use-model-selection';
@@ -30,6 +31,7 @@ import { isLocalMode } from '@/lib/config';
 import { BillingModal } from '@/components/billing/billing-modal';
 import { useRouter } from 'next/navigation';
 import posthog from 'posthog-js';
+import { useFeatureFlag } from '@/lib/feature-flags';
 
 export interface ChatInputHandles {
   getPendingFiles: () => File[];
@@ -55,6 +57,7 @@ export interface ChatInputProps {
   onChange?: (value: string) => void;
   onFileBrowse?: () => void;
   sandboxId?: string;
+  setSandboxId?: (id: string) => void; // Add callback to update sandbox ID
   hideAttachments?: boolean;
   selectedAgentId?: string;
   onAgentSelect?: (agentId: string | undefined) => void;
@@ -84,6 +87,8 @@ export interface UploadedFile {
   size: number;
   type: string;
   localUrl?: string;
+  referenceId?: string;
+  expiresAt?: string;
 }
 
 
@@ -102,6 +107,7 @@ export const ChatInput = forwardRef<ChatInputHandles, ChatInputProps>(
       onChange: controlledOnChange,
       onFileBrowse,
       sandboxId,
+      setSandboxId,
       hideAttachments = false,
       selectedAgentId,
       onAgentSelect,
@@ -132,6 +138,23 @@ export const ChatInput = forwardRef<ChatInputHandles, ChatInputProps>(
     const value = isControlled ? controlledValue : uncontrolledValue;
 
     const isSunaAgent = agentMetadata?.is_suna_default || false;
+    
+    // Get custom agents feature flag
+    const { enabled: customAgentsEnabled } = useFeatureFlag('custom_agents');
+    
+    // Determine effective agent ID for configuration (defaults to suna-default)
+    const effectiveAgentId = React.useMemo(() => {
+      // If custom agents are disabled, always use suna-default
+      if (!customAgentsEnabled) {
+        return 'suna-default';
+      }
+      // If no agent selected, use suna-default
+      if (!selectedAgentId) {
+        return 'suna-default';
+      }
+      // Otherwise use the selected agent
+      return selectedAgentId;
+    }, [customAgentsEnabled, selectedAgentId]);
 
     const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([]);
     const [pendingFiles, setPendingFiles] = useState<File[]>([]);
@@ -234,7 +257,14 @@ export const ChatInput = forwardRef<ChatInputHandles, ChatInputProps>(
 
       if (uploadedFiles.length > 0) {
         const fileInfo = uploadedFiles
-          .map((file) => `[Uploaded File: ${file.path}]`)
+          .map((file) => {
+            // Check if file has a reference ID (for social media uploads)
+            if (file.referenceId) {
+              return `[File Reference: ${file.referenceId}] ${file.name}`;
+            }
+            // Regular file upload
+            return `[Uploaded File: ${file.path}]`;
+          })
           .join('\n');
         message = message ? `${message}\n\n${fileInfo}` : fileInfo;
       }
@@ -367,15 +397,23 @@ export const ChatInput = forwardRef<ChatInputHandles, ChatInputProps>(
               setIsDraggingOver(false);
               if (fileInputRef.current && e.dataTransfer.files.length > 0) {
                 const files = Array.from(e.dataTransfer.files);
-                handleFiles(
-                  files,
-                  sandboxId,
-                  setPendingFiles,
-                  setUploadedFiles,
-                  setIsUploading,
-                  messages,
-                  queryClient,
-                );
+                // Get user ID for social media uploads
+                const supabase = createClient();
+                supabase.auth.getUser().then(({ data }) => {
+                  const userId = data?.user?.id;
+                  
+                  handleFiles(
+                    files,
+                    sandboxId,
+                    setPendingFiles,
+                    setUploadedFiles,
+                    setIsUploading,
+                    messages,
+                    queryClient,
+                    value, // Pass current message for intent detection
+                    userId, // Pass user ID for reference system
+                  );
+                });
               }
             }}
           >
@@ -406,6 +444,7 @@ export const ChatInput = forwardRef<ChatInputHandles, ChatInputProps>(
                   fileInputRef={fileInputRef}
                   isUploading={isUploading}
                   sandboxId={sandboxId}
+                  setSandboxId={setSandboxId}
                   setPendingFiles={setPendingFiles}
                   setUploadedFiles={setUploadedFiles}
                   setIsUploading={setIsUploading}
@@ -428,7 +467,7 @@ export const ChatInput = forwardRef<ChatInputHandles, ChatInputProps>(
             </div>
           </Card>
 
-          {enableAdvancedConfig && selectedAgentId && (
+          {false && enableAdvancedConfig && selectedAgentId && (
             <div className="w-full max-w-4xl mx-auto -mt-12 relative z-20">
               <div className="bg-gradient-to-b from-transparent via-transparent to-muted/30 pt-8 pb-2 px-4 rounded-b-3xl border border-t-0 border-border/50 transition-all duration-300 ease-out">
                 <div className="flex items-center justify-between gap-1 overflow-x-auto scrollbar-none relative">
@@ -469,28 +508,28 @@ export const ChatInput = forwardRef<ChatInputHandles, ChatInputProps>(
                     <span className="text-xs font-medium">Integrations</span>
                   </button>
                   <button
-                    onClick={() => router.push(`/agents/config/${selectedAgentId}?tab=configuration&accordion=instructions`)}
+                    onClick={() => router.push(`/agents/config/${effectiveAgentId}?tab=configuration&accordion=instructions`)}
                     className="flex items-center gap-1.5 text-muted-foreground hover:text-foreground transition-all duration-200 px-2.5 py-1.5 rounded-lg hover:bg-muted/50 border border-transparent hover:border-border/30 flex-shrink-0 cursor-pointer relative pointer-events-auto"
                   >
                     <Brain className="h-3.5 w-3.5 flex-shrink-0" />
                     <span className="text-xs font-medium">Instructions</span>
                   </button>
                   <button
-                    onClick={() => router.push(`/agents/config/${selectedAgentId}?tab=configuration&accordion=knowledge`)}
+                    onClick={() => router.push(`/agents/config/${effectiveAgentId}?tab=configuration&accordion=knowledge`)}
                     className="flex items-center gap-1.5 text-muted-foreground hover:text-foreground transition-all duration-200 px-2.5 py-1.5 rounded-lg hover:bg-muted/50 border border-transparent hover:border-border/30 flex-shrink-0 cursor-pointer relative pointer-events-auto"
                   >
                     <Database className="h-3.5 w-3.5 flex-shrink-0" />
                     <span className="text-xs font-medium">Knowledge</span>
                   </button>
                   <button
-                    onClick={() => router.push(`/agents/config/${selectedAgentId}?tab=configuration&accordion=triggers`)}
+                    onClick={() => router.push(`/agents/config/${effectiveAgentId}?tab=configuration&accordion=triggers`)}
                     className="flex items-center gap-1.5 text-muted-foreground hover:text-foreground transition-all duration-200 px-2.5 py-1.5 rounded-lg hover:bg-muted/50 border border-transparent hover:border-border/30 flex-shrink-0 cursor-pointer relative pointer-events-auto"
                   >
                     <Zap className="h-3.5 w-3.5 flex-shrink-0" />
                     <span className="text-xs font-medium">Triggers</span>
                   </button>
                   <button
-                    onClick={() => router.push(`/agents/config/${selectedAgentId}?tab=configuration&accordion=workflows`)}
+                    onClick={() => router.push(`/agents/config/${effectiveAgentId}?tab=configuration&accordion=workflows`)}
                     className="flex items-center gap-1.5 text-muted-foreground hover:text-foreground transition-all duration-200 px-2.5 py-1.5 rounded-lg hover:bg-muted/50 border border-transparent hover:border-border/30 flex-shrink-0 cursor-pointer relative pointer-events-auto"
                   >
                     <Workflow className="h-3.5 w-3.5 flex-shrink-0" />

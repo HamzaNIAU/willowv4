@@ -35,6 +35,7 @@ import { SheetsToolView } from '../sheets-tools/sheets-tool-view';
 import { GetProjectStructureView } from '../web-dev/GetProjectStructureView';
 import { ImageEditGenerateToolView } from '../image-edit-generate-tool/ImageEditGenerateToolView';
 import { YouTubeToolView } from '../YouTubeToolView';
+import { YouTubeUploadHistoryView } from '../YouTubeUploadHistoryView';
 
 
 export type ToolViewComponent = React.ComponentType<ToolViewProps>;
@@ -117,6 +118,7 @@ const defaultRegistry: ToolViewRegistryType = {
   'youtube-subscribe-channel': YouTubeToolView,
   'youtube-manage-video': YouTubeToolView,
   'youtube-smart-search': YouTubeToolView,
+  'youtube-check-upload-status': YouTubeUploadHistoryView,
   
   // Underscore versions (actual backend tool names)
   'youtube_authenticate': YouTubeToolView,
@@ -130,6 +132,7 @@ const defaultRegistry: ToolViewRegistryType = {
   'youtube_subscribe_channel': YouTubeToolView,
   'youtube_manage_video': YouTubeToolView,
   'youtube_smart_search': YouTubeToolView,
+  'youtube_check_upload_status': YouTubeUploadHistoryView,
 
   'get-project-structure': GetProjectStructureView,
   'list-web-projects': GenericToolView,

@@ -28,10 +28,10 @@ def initialize():
     redis_port = int(os.getenv("REDIS_PORT", 6379))
     redis_password = os.getenv("REDIS_PASSWORD", "")
     
-    # Connection pool configuration - optimized for production
-    max_connections = 128            # Reasonable limit for production
-    socket_timeout = 15.0            # 15 seconds socket timeout
-    connect_timeout = 10.0           # 10 seconds connection timeout
+    # Connection pool configuration - FIXED for high-concurrency workload
+    max_connections = 512            # Increased for 4 workers + background tasks + agent execution
+    socket_timeout = 30.0            # Longer timeout for stability
+    connect_timeout = 15.0           # More generous connection timeout
     retry_on_timeout = not (os.getenv("REDIS_RETRY_ON_TIMEOUT", "True").lower() != "true")
 
     logger.debug(f"Initializing Redis connection pool to {redis_host}:{redis_port} with max {max_connections} connections")
@@ -114,11 +114,28 @@ async def close():
 
 
 async def get_client():
-    """Get the Redis client, initializing if necessary."""
+    """Get Redis client with enhanced health checks - FIXED connection management"""
     global client, _initialized
+    
+    # Initialize if needed
     if client is None or not _initialized:
         await retry(lambda: initialize_async())
-    return client
+        return client
+    
+    # REDIS FIX: Health check to ensure client is still responsive  
+    try:
+        await asyncio.wait_for(client.ping(), timeout=3.0)
+        return client
+    except Exception as e:
+        logger.warning(f"⚠️ Redis client health check failed, reinitializing: {e}")
+        
+        # Reinitialize on health check failure
+        try:
+            await retry(lambda: initialize_async())
+            return client
+        except Exception as init_error:
+            logger.error(f"❌ Redis reinitialization failed: {init_error}")
+            raise ConnectionError(f"Redis unavailable: {init_error}")
 
 
 # Basic Redis operations

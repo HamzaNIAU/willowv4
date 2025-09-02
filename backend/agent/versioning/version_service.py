@@ -83,6 +83,13 @@ class VersionService:
     async def _verify_agent_access(self, agent_id: str, user_id: str) -> tuple[bool, bool]:
         if user_id == "system":
             return True, True
+        
+        # Special handling for suna-default virtual agent
+        if agent_id == "suna-default":
+            from flags.flags import is_enabled
+            if await is_enabled("default_agent"):
+                return True, False  # User has access but agent is not public
+            return False, False
             
         client = await self._get_client()
         
@@ -314,6 +321,39 @@ class VersionService:
         return self._version_from_db_row(result.data[0])
     
     async def get_active_version(self, agent_id: str, user_id: str = "system") -> Optional[AgentVersion]:
+        # Special handling for suna-default virtual agent
+        if agent_id == "suna-default":
+            from flags.flags import is_enabled
+            from agent.suna_config import SUNA_CONFIG
+            from datetime import datetime, timezone
+            
+            if await is_enabled("default_agent"):
+                # Return a virtual version for suna-default
+                now = datetime.now(timezone.utc)
+                return AgentVersion(
+                    version_id="suna-default-v1",
+                    agent_id="suna-default",
+                    version_number=1,
+                    version_name="v1",
+                    is_active=True,
+                    config={
+                        "system_prompt": SUNA_CONFIG["system_prompt"],
+                        "model": SUNA_CONFIG["model"],
+                        "tools": {
+                            "agentpress": SUNA_CONFIG["agentpress_tools"],
+                            "mcp": SUNA_CONFIG["configured_mcps"],
+                            "custom_mcp": SUNA_CONFIG["custom_mcps"]
+                        },
+                        "workflows": [],
+                        "triggers": []
+                    },
+                    created_at=now,
+                    created_by=user_id,
+                    published_at=now,
+                    metadata={"is_suna_default": True, "centrally_managed": True}
+                )
+            return None
+        
         is_owner, is_public = await self._verify_agent_access(agent_id, user_id)
         if not is_owner and not is_public:
             raise UnauthorizedError("You don't have permission to view this agent")

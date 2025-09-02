@@ -23,11 +23,14 @@ services:
       - "8000:8000"
     volumes:
       - ./backend/.env:/app/.env
-      - ./backend/youtube_mcp:/app/youtube_mcp:ro
-      - ./backend/agent:/app/agent:ro
-      - ./backend/api.py:/app/api.py:ro
-      - ./backend/files_api.py:/app/files_api.py:ro
-      - ./backend/services:/app/services:ro
+      - ./backend/youtube_mcp:/app/youtube_mcp
+      - ./backend/agent:/app/agent
+      - ./backend/api.py:/app/api.py
+      - ./backend/files_api.py:/app/files_api.py
+      - ./backend/services:/app/services
+      - ./backend/triggers:/app/triggers
+      - ./backend/knowledge_base:/app/knowledge_base
+      - ./backend/agentpress:/app/agentpress
     env_file:
       - ./backend/.env
     environment:
@@ -49,10 +52,11 @@ services:
       dockerfile: Dockerfile
     command: uv run dramatiq --skip-logging --processes 4 --threads 4 run_agent_background
     volumes:
-      - ./backend/.env:/app/.env:ro
-      - ./backend/agent:/app/agent:ro
-      - ./backend/services:/app/services:ro
-      - ./backend/youtube_mcp:/app/youtube_mcp:ro
+      - ./backend/.env:/app/.env
+      - ./backend/agent:/app/agent
+      - ./backend/services:/app/services
+      - ./backend/youtube_mcp:/app/youtube_mcp
+      - ./backend/agentpress:/app/agentpress
     env_file:
       - ./backend/.env
     environment:
@@ -74,6 +78,8 @@ services:
       - "3000:3000"
     volumes:
       - ./frontend/.env.local:/app/.env.local:ro
+    environment:
+      - BACKEND_INTERNAL_URL=http://backend:8000/api
     depends_on:
       - backend
 

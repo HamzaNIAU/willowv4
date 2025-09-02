@@ -47,6 +47,35 @@ import {
   EyeOff,
   MoreVertical
 } from 'lucide-react';
+
+// Custom platform SVG components
+const YoutubeSvg = ({ className }: { className?: string }) => (
+  <img src="/platforms/youtube.svg" alt="YouTube" className={className} />
+);
+
+const InstagramSvg = ({ className }: { className?: string }) => (
+  <img src="/platforms/instagram.png" alt="Instagram" className={className} />
+);
+
+const TwitterSvg = ({ className }: { className?: string }) => (
+  <img src="/platforms/x.png" alt="X (Twitter)" className={className} />
+);
+
+const TikTokSvg = ({ className }: { className?: string }) => (
+  <img src="/platforms/tiktok.png" alt="TikTok" className={className} />
+);
+
+const LinkedInSvg = ({ className }: { className?: string }) => (
+  <img src="/platforms/linkedin.png" alt="LinkedIn" className={className} />
+);
+
+const FacebookSvg = ({ className }: { className?: string }) => (
+  <img src="/platforms/facebook.png" alt="Facebook" className={className} />
+);
+
+const TwitchSvg = ({ className }: { className?: string }) => (
+  <img src="/platforms/twitch.png" alt="Twitch" className={className} />
+);
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { backendApi } from '@/lib/api-client';
 import { toast } from 'sonner';
@@ -79,13 +108,13 @@ interface SocialMediaAccount {
 }
 
 const platformIcons = {
-  youtube: Youtube,
-  instagram: Instagram,
-  twitter: Twitter,
-  facebook: Facebook,
-  linkedin: Linkedin,
-  tiktok: Music,
-  twitch: Video,
+  youtube: YoutubeSvg,
+  instagram: InstagramSvg,
+  twitter: TwitterSvg,
+  facebook: FacebookSvg,
+  linkedin: LinkedInSvg,
+  tiktok: TikTokSvg,
+  twitch: TwitchSvg,
 };
 
 const platformColors = {
@@ -225,7 +254,7 @@ export default function SocialMediaPage() {
     const platforms: SocialPlatformGroup[] = [
       {
         name: 'YouTube',
-        icon: Youtube,
+        icon: YoutubeSvg,
         color: 'text-red-600 dark:text-red-500',
         accounts: youtubeChannels || [],
         available: true,
@@ -233,7 +262,7 @@ export default function SocialMediaPage() {
       },
       {
         name: 'Instagram',
-        icon: Instagram,
+        icon: InstagramSvg,
         color: 'text-pink-600 dark:text-pink-500',
         accounts: [],
         available: false,
@@ -241,7 +270,7 @@ export default function SocialMediaPage() {
       },
       {
         name: 'X (Twitter)',
-        icon: Twitter,
+        icon: TwitterSvg,
         color: 'text-blue-600 dark:text-blue-500',
         accounts: [],
         available: false,
@@ -249,7 +278,7 @@ export default function SocialMediaPage() {
       },
       {
         name: 'TikTok',
-        icon: Music,
+        icon: TikTokSvg,
         color: 'text-gray-900 dark:text-gray-100',
         accounts: [],
         available: false,
@@ -257,7 +286,7 @@ export default function SocialMediaPage() {
       },
       {
         name: 'LinkedIn',
-        icon: Linkedin,
+        icon: LinkedInSvg,
         color: 'text-blue-700 dark:text-blue-600',
         accounts: [],
         available: false,
@@ -265,7 +294,7 @@ export default function SocialMediaPage() {
       },
       {
         name: 'Facebook',
-        icon: Facebook,
+        icon: FacebookSvg,
         color: 'text-blue-600 dark:text-blue-500',
         accounts: [],
         available: false,
@@ -273,7 +302,7 @@ export default function SocialMediaPage() {
       },
       {
         name: 'Twitch',
-        icon: Video,
+        icon: TwitchSvg,
         color: 'text-purple-600 dark:text-purple-500',
         accounts: [],
         available: false,
@@ -391,7 +420,11 @@ export default function SocialMediaPage() {
                                   />
                                 ) : null}
                                 <div className={`h-10 w-10 rounded-full bg-red-100 dark:bg-red-900/20 flex items-center justify-center ${(channel.profile_picture_medium || channel.profile_picture || channel.profile_picture_small) ? 'hidden' : ''}`}>
-                                  <Youtube className="h-5 w-5 text-red-600" />
+                                  <img 
+                                    src="/platforms/youtube.svg" 
+                                    alt="YouTube"
+                                    className="h-5 w-5"
+                                  />
                                 </div>
                                 <div>
                                   <div className="font-medium">{channel.name}</div>
@@ -540,7 +573,11 @@ export default function SocialMediaPage() {
                         className="h-10 w-10 rounded-full object-cover"
                       />
                     ) : (
-                      <Youtube className="h-6 w-6 text-red-600" />
+                      <img 
+                        src="/platforms/youtube.svg" 
+                        alt="YouTube"
+                        className="h-6 w-6"
+                      />
                     )}
                   </div>
                   <div>

@@ -70,7 +70,7 @@ const CONTENT_LAYOUT_ID = 'tool-panel-content';
 
 // Helper function to generate the computer title
 const getComputerTitle = (agentName?: string): string => {
-  return agentName ? `${agentName}'s Computer` : "Suna's Computer";
+  return agentName ? `${agentName}'s Computer` : "Willow's Computer";
 };
 
 // Reusable header component for the tool panel

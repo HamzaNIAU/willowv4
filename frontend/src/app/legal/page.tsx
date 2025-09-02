@@ -157,10 +157,10 @@ function LegalContent() {
                     <p className="text-muted-foreground text-balance mb-6">
                       PLEASE READ THESE TERMS OF USE ("AGREEMENT" OR "TERMS OF
                       USE" or "TERMS OF SERVICE" or "TERMS AND CONDITIONS")
-                      CAREFULLY BEFORE USING THE SERVICES OFFERED BY Kortix AI
+                      CAREFULLY BEFORE USING THE SERVICES OFFERED BY Rzvi AI
                       Corp (701 Tillery Street Unit 12-2521 Austin, Texas 78702,
                       United States). THIS AGREEMENT SETS FORTH THE LEGALLY
-                      BINDING TERMS AND CONDITIONS FOR YOUR USE OF THE SUNA
+                      BINDING TERMS AND CONDITIONS FOR YOUR USE OF THE WILLOW
                       WEBSITE AND ALL RELATED SERVICES.
                     </p>
 
@@ -169,11 +169,11 @@ function LegalContent() {
                     </h3>
                     <ul className="text-muted-foreground space-y-1 mb-6">
                       <li>
-                        "Company" refers to Kortix AI Corp (701 Tillery Street
+                        "Company" refers to Rzvi AI Corp (701 Tillery Street
                         Unit 12-2521 Austin, Texas 78702, United States).
                       </li>
                       <li>
-                        "Site" refers to the Suna website, including any related
+                        "Site" refers to the Willow website, including any related
                         features, content, or applications offered from time to
                         time by the Company.
                       </li>

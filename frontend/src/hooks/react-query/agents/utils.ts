@@ -195,13 +195,53 @@ export const getAgents = async (params: AgentsParams = {}): Promise<AgentsRespon
     const result = await response.json();
     return result;
   } catch (err) {
-    console.error('Error fetching agents:', err);
+    // Throttle error logging when custom agents is disabled
+    if (err instanceof Error && err.message === 'Custom agents is not enabled') {
+      // Only log once every 30 seconds to avoid spam
+      const lastLoggedKey = 'custom_agents_error_logged';
+      const lastLogged = parseInt(localStorage.getItem(lastLoggedKey) || '0');
+      const now = Date.now();
+      
+      if (now - lastLogged > 30000) { // 30 seconds
+        console.warn('Custom agents is disabled - agent API calls will fail silently');
+        localStorage.setItem(lastLoggedKey, now.toString());
+      }
+    } else {
+      console.error('Error fetching agents:', err);
+    }
     throw err;
   }
 };
 
 export const getAgent = async (agentId: string): Promise<Agent> => {
   try {
+    // Special handling for suna-default - always allow access
+    if (agentId === 'suna-default') {
+      const supabase = createClient();
+      const { data: { session } } = await supabase.auth.getSession();
+
+      if (!session) {
+        throw new Error('You must be logged in to get agent details');
+      }
+
+      const response = await fetch(`${API_URL}/agents/${agentId}`, {
+        method: 'GET',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session.access_token}`,
+        },
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ message: 'Unknown error' }));
+        throw new Error(errorData.message || `HTTP ${response.status}: ${response.statusText}`);
+      }
+
+      const agent = await response.json();
+      return agent;
+    }
+
+    // For non-suna-default agents, check if custom_agents is enabled
     const agentPlaygroundEnabled = await isFlagEnabled('custom_agents');
     if (!agentPlaygroundEnabled) {
       throw new Error('Custom agents is not enabled');
@@ -375,7 +415,20 @@ export const getThreadAgent = async (threadId: string): Promise<ThreadAgentRespo
     const agent = await response.json();
     return agent;
   } catch (err) {
-    console.error('Error fetching thread agent:', err);
+    // Throttle error logging when custom agents is disabled
+    if (err instanceof Error && err.message === 'Custom agents is not enabled') {
+      // Only log once every 30 seconds to avoid spam
+      const lastLoggedKey = 'thread_agent_error_logged';
+      const lastLogged = parseInt(localStorage.getItem(lastLoggedKey) || '0');
+      const now = Date.now();
+      
+      if (now - lastLogged > 30000) { // 30 seconds
+        console.warn('Custom agents is disabled - thread agent API calls will fail silently');
+        localStorage.setItem(lastLoggedKey, now.toString());
+      }
+    } else {
+      console.error('Error fetching thread agent:', err);
+    }
     throw err;
   }
 };
