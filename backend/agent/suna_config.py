@@ -29,7 +29,12 @@ SUNA_CONFIG = {
         "mcp_search_tool": True,
         "credential_profile_tool": True,
         "workflow_tool": True,
-        "trigger_tool": True
+        "trigger_tool": True,
+        "twitter_tool": True,
+        "instagram_tool": True,
+        "linkedin_tool": True,
+        "pinterest_tool": True,
+        "tiktok_tool": True
     },
     "is_default": True
 }

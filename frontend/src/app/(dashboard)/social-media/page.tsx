@@ -155,6 +155,28 @@ export default function SocialMediaPage() {
     },
   });
 
+  // Temporarily disable problematic platform account fetching until backend is fixed
+  const instagramAccounts: any[] = [];
+  const twitterAccounts: any[] = [];
+  const linkedinAccounts: any[] = [];
+  const tiktokAccounts: any[] = [];
+
+  // Enable Pinterest account fetching (backend fixed)
+  const { data: pinterestAccounts, isLoading: loadingPinterest } = useQuery({
+    queryKey: ['pinterest', 'accounts'],
+    queryFn: async () => {
+      try {
+        const response = await backendApi.get<{ success: boolean; accounts: YouTubeChannel[] }>(
+          '/pinterest/accounts'
+        );
+        return response.data.accounts || [];
+      } catch (error) {
+        console.warn('Pinterest API not available:', error);
+        return [];
+      }
+    },
+  });
+
   // Initiate YouTube auth
   const initiateYouTubeAuth = useMutation({
     mutationFn: async () => {
@@ -240,6 +262,231 @@ export default function SocialMediaPage() {
     initiateYouTubeAuth.mutate();
   };
 
+  // Initiate Instagram auth
+  const initiateInstagramAuth = useMutation({
+    mutationFn: async () => {
+      const response = await backendApi.post<{ success: boolean; auth_url: string }>(
+        '/instagram/auth/initiate'
+      );
+      return response.data;
+    },
+    onSuccess: (data) => {
+      if (data.auth_url) {
+        const popup = window.open(
+          data.auth_url,
+          'instagram-auth',
+          'width=600,height=700,resizable=yes,scrollbars=yes'
+        );
+        
+        const handleMessage = (event: MessageEvent) => {
+          if (event.data?.type === 'instagram-auth-success') {
+            popup?.close();
+            queryClient.invalidateQueries({ queryKey: ['instagram', 'accounts'] });
+            toast.success('Instagram account connected successfully!');
+            window.removeEventListener('message', handleMessage);
+            setConnectingPlatform(null);
+          } else if (event.data?.type === 'instagram-auth-error') {
+            popup?.close();
+            toast.error(`Failed to connect: ${event.data.error}`);
+            window.removeEventListener('message', handleMessage);
+            setConnectingPlatform(null);
+          }
+        };
+        
+        window.addEventListener('message', handleMessage);
+      }
+    },
+    onError: (error: any) => {
+      toast.error(error.message || 'Failed to initiate Instagram authentication');
+      setConnectingPlatform(null);
+    },
+  });
+
+  // Initiate Twitter auth
+  const initiateTwitterAuth = useMutation({
+    mutationFn: async () => {
+      const response = await backendApi.post<{ success: boolean; auth_url: string }>(
+        '/twitter/auth/initiate'
+      );
+      return response.data;
+    },
+    onSuccess: (data) => {
+      if (data.auth_url) {
+        const popup = window.open(
+          data.auth_url,
+          'twitter-auth',
+          'width=600,height=700,resizable=yes,scrollbars=yes'
+        );
+        
+        const handleMessage = (event: MessageEvent) => {
+          if (event.data?.type === 'twitter-auth-success') {
+            popup?.close();
+            queryClient.invalidateQueries({ queryKey: ['twitter', 'accounts'] });
+            toast.success('Twitter account connected successfully!');
+            window.removeEventListener('message', handleMessage);
+            setConnectingPlatform(null);
+          } else if (event.data?.type === 'twitter-auth-error') {
+            popup?.close();
+            toast.error(`Failed to connect: ${event.data.error}`);
+            window.removeEventListener('message', handleMessage);
+            setConnectingPlatform(null);
+          }
+        };
+        
+        window.addEventListener('message', handleMessage);
+      }
+    },
+    onError: (error: any) => {
+      toast.error(error.message || 'Failed to initiate Twitter authentication');
+      setConnectingPlatform(null);
+    },
+  });
+
+  // Initiate LinkedIn auth
+  const initiateLinkedInAuth = useMutation({
+    mutationFn: async () => {
+      const response = await backendApi.post<{ success: boolean; auth_url: string }>(
+        '/linkedin/auth/initiate'
+      );
+      return response.data;
+    },
+    onSuccess: (data) => {
+      if (data.auth_url) {
+        const popup = window.open(
+          data.auth_url,
+          'linkedin-auth',
+          'width=600,height=700,resizable=yes,scrollbars=yes'
+        );
+        
+        const handleMessage = (event: MessageEvent) => {
+          if (event.data?.type === 'linkedin-auth-success') {
+            popup?.close();
+            queryClient.invalidateQueries({ queryKey: ['linkedin', 'accounts'] });
+            toast.success('LinkedIn account connected successfully!');
+            window.removeEventListener('message', handleMessage);
+            setConnectingPlatform(null);
+          } else if (event.data?.type === 'linkedin-auth-error') {
+            popup?.close();
+            toast.error(`Failed to connect: ${event.data.error}`);
+            window.removeEventListener('message', handleMessage);
+            setConnectingPlatform(null);
+          }
+        };
+        
+        window.addEventListener('message', handleMessage);
+      }
+    },
+    onError: (error: any) => {
+      toast.error(error.message || 'Failed to initiate LinkedIn authentication');
+      setConnectingPlatform(null);
+    },
+  });
+
+  // Initiate TikTok auth
+  const initiateTikTokAuth = useMutation({
+    mutationFn: async () => {
+      const response = await backendApi.post<{ success: boolean; auth_url: string }>(
+        '/tiktok/auth/initiate'
+      );
+      return response.data;
+    },
+    onSuccess: (data) => {
+      if (data.auth_url) {
+        const popup = window.open(
+          data.auth_url,
+          'tiktok-auth',
+          'width=600,height=700,resizable=yes,scrollbars=yes'
+        );
+        
+        const handleMessage = (event: MessageEvent) => {
+          if (event.data?.type === 'tiktok-auth-success') {
+            popup?.close();
+            queryClient.invalidateQueries({ queryKey: ['tiktok', 'accounts'] });
+            toast.success('TikTok account connected successfully!');
+            window.removeEventListener('message', handleMessage);
+            setConnectingPlatform(null);
+          } else if (event.data?.type === 'tiktok-auth-error') {
+            popup?.close();
+            toast.error(`Failed to connect: ${event.data.error}`);
+            window.removeEventListener('message', handleMessage);
+            setConnectingPlatform(null);
+          }
+        };
+        
+        window.addEventListener('message', handleMessage);
+      }
+    },
+    onError: (error: any) => {
+      toast.error(error.message || 'Failed to initiate TikTok authentication');
+      setConnectingPlatform(null);
+    },
+  });
+
+  const handleConnectInstagram = () => {
+    setConnectingPlatform('instagram');
+    initiateInstagramAuth.mutate();
+  };
+
+  const handleConnectTwitter = () => {
+    setConnectingPlatform('twitter');
+    initiateTwitterAuth.mutate();
+  };
+
+  const handleConnectLinkedIn = () => {
+    setConnectingPlatform('linkedin');
+    initiateLinkedInAuth.mutate();
+  };
+
+  const handleConnectTikTok = () => {
+    setConnectingPlatform('tiktok');
+    initiateTikTokAuth.mutate();
+  };
+
+  // Initiate Pinterest auth
+  const initiatePinterestAuth = useMutation({
+    mutationFn: async () => {
+      const response = await backendApi.post<{ success: boolean; auth_url: string }>(
+        '/pinterest/auth/initiate'
+      );
+      return response.data;
+    },
+    onSuccess: (data) => {
+      if (data.auth_url) {
+        const popup = window.open(
+          data.auth_url,
+          'pinterest-auth',
+          'width=600,height=700,resizable=yes,scrollbars=yes'
+        );
+        
+        const handleMessage = (event: MessageEvent) => {
+          if (event.data?.type === 'pinterest-auth-success') {
+            popup?.close();
+            queryClient.invalidateQueries({ queryKey: ['pinterest', 'accounts'] });
+            toast.success('Pinterest account connected successfully!');
+            window.removeEventListener('message', handleMessage);
+            setConnectingPlatform(null);
+          } else if (event.data?.type === 'pinterest-auth-error') {
+            popup?.close();
+            toast.error(`Failed to connect: ${event.data.error}`);
+            window.removeEventListener('message', handleMessage);
+            setConnectingPlatform(null);
+          }
+        };
+        
+        window.addEventListener('message', handleMessage);
+      }
+    },
+    onError: (error: any) => {
+      toast.error(error.message || 'Failed to initiate Pinterest authentication');
+      setConnectingPlatform(null);
+    },
+  });
+
+  const handleConnectPinterest = () => {
+    setConnectingPlatform('pinterest');
+    initiatePinterestAuth.mutate();
+  };
+
   const formatCount = (count: number): string => {
     if (count >= 1_000_000) {
       return `${(count / 1_000_000).toFixed(1)}M`;
@@ -288,9 +535,17 @@ export default function SocialMediaPage() {
         name: 'LinkedIn',
         icon: LinkedInSvg,
         color: 'text-blue-700 dark:text-blue-600',
-        accounts: [],
-        available: false,
+        accounts: linkedinAccounts || [],
+        available: true,
         description: 'Share professional content and manage company pages'
+      },
+      {
+        name: 'Pinterest',
+        icon: () => <img src="/platforms/pinterest.png" alt="Pinterest" className="h-6 w-6" />,
+        color: 'text-red-600 dark:text-red-500',
+        accounts: pinterestAccounts || [],
+        available: true,
+        description: 'Create pins, manage boards, and track engagement'
       },
       {
         name: 'Facebook',
@@ -322,7 +577,7 @@ export default function SocialMediaPage() {
     }
 
     return platforms;
-  }, [youtubeChannels, searchQuery]);
+  }, [youtubeChannels, instagramAccounts, twitterAccounts, linkedinAccounts, tiktokAccounts, pinterestAccounts, searchQuery]);
 
   const connectedPlatforms = socialPlatforms.filter(p => p.accounts.length > 0);
   const availablePlatforms = socialPlatforms.filter(p => p.available && p.accounts.length === 0);
@@ -377,7 +632,15 @@ export default function SocialMediaPage() {
                       </div>
                     </div>
                     <Button
-                      onClick={platform.name === 'YouTube' ? handleConnectYouTube : undefined}
+                      onClick={
+                        platform.name === 'YouTube' ? handleConnectYouTube :
+                        platform.name === 'Instagram' ? handleConnectInstagram :
+                        platform.name === 'X (Twitter)' ? handleConnectTwitter :
+                        platform.name === 'LinkedIn' ? handleConnectLinkedIn :
+                        platform.name === 'TikTok' ? handleConnectTikTok :
+                        platform.name === 'Pinterest' ? handleConnectPinterest :
+                        undefined
+                      }
                       disabled={!platform.available || connectingPlatform === platform.name.toLowerCase()}
                       size="sm"
                     >
@@ -520,7 +783,15 @@ export default function SocialMediaPage() {
                         </div>
                       </div>
                       <Button
-                        onClick={platform.name === 'YouTube' ? handleConnectYouTube : undefined}
+                        onClick={
+                          platform.name === 'YouTube' ? handleConnectYouTube :
+                          platform.name === 'Instagram' ? handleConnectInstagram :
+                          platform.name === 'X (Twitter)' ? handleConnectTwitter :
+                          platform.name === 'LinkedIn' ? handleConnectLinkedIn :
+                          platform.name === 'TikTok' ? handleConnectTikTok :
+                          platform.name === 'Pinterest' ? handleConnectPinterest :
+                          undefined
+                        }
                         disabled={connectingPlatform === platform.name.toLowerCase()}
                       >
                         <Plus className="h-4 w-4 mr-2" />

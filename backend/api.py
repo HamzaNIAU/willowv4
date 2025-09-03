@@ -219,7 +219,33 @@ from composio_integration import api as composio_api
 api_router.include_router(composio_api.router)
 
 from youtube_mcp import api as youtube_api
+youtube_api.initialize(db)
 api_router.include_router(youtube_api.router)
+
+# Twitter MCP Integration
+from twitter_mcp import api as twitter_api
+twitter_api.initialize(db)
+api_router.include_router(twitter_api.router)
+
+# Instagram MCP Integration
+from instagram_mcp import api as instagram_api
+instagram_api.initialize(db)
+api_router.include_router(instagram_api.router)
+
+# LinkedIn MCP Integration
+from linkedin_mcp import api as linkedin_api
+linkedin_api.initialize(db)
+api_router.include_router(linkedin_api.router)
+
+# Pinterest MCP Integration
+from pinterest_mcp import api as pinterest_api
+pinterest_api.initialize(db)
+api_router.include_router(pinterest_api.router)
+
+# TikTok MCP Integration
+from tiktok_mcp import api as tiktok_api
+tiktok_api.initialize(db)
+api_router.include_router(tiktok_api.router)
 
 from files_api import router as files_router
 from files_api import initialize as files_api_initialize

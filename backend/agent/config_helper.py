@@ -44,6 +44,11 @@ async def _extract_suna_agent_config(agent_data: Dict[str, Any], version_data: O
         'version_name': version_data.get('version_name', 'v1') if version_data else 'v1',
         'profile_image_url': agent_data.get('profile_image_url'),
         'youtube_channels': [],  # Will be populated from cache during agent execution
+        'twitter_accounts': [],  # Will be populated from database during agent execution
+        'instagram_accounts': [],  # Will be populated from database during agent execution  
+        'linkedin_accounts': [],  # Will be populated from database during agent execution
+        'pinterest_accounts': [],  # Will be populated from database during agent execution
+        'tiktok_accounts': [],  # Will be populated from database during agent execution
         'restrictions': {
             'system_prompt_editable': False,
             'tools_editable': False,

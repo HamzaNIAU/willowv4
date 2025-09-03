@@ -580,7 +580,7 @@ const GuestMenu: React.FC<UnifiedConfigMenuProps> = () => {
                                 <div className="flex-shrink-0">
                                     <WillowLogo size={16} />
                                 </div>
-                                <span className="truncate text-sm">Suna</span>
+                                <span className="truncate text-sm">Willow</span>
                             </div>
                         </Button>
                     </span>

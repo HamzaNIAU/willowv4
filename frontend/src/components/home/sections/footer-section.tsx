@@ -20,10 +20,10 @@ export function FooterSection() {
   }, []);
 
   const logoSrc = !mounted
-    ? '/kortix-logo.svg'
+    ? '/willownameblack.svg'
     : resolvedTheme === 'dark'
-      ? '/kortix-logo-white.svg'
-      : '/kortix-logo.svg';
+      ? '/willownamewhite.svg'
+      : '/willownameblack.svg';
 
   return (
     <footer id="footer" className="w-full pb-0 px-6">
@@ -34,7 +34,7 @@ export function FooterSection() {
               <Link href="/" className="flex items-center gap-2">
                 <Image
                   src={logoSrc}
-                  alt="Kortix Logo"
+                  alt="Willow Logo"
                   width={122}
                   height={22}
                   priority
@@ -142,7 +142,7 @@ export function FooterSection() {
         <div className="absolute inset-0 bg-gradient-to-t from-transparent to-background z-10 from-40%" />
         <div className="absolute inset-0 ">
           <FlickeringGrid
-            text={tablet ? 'Agents' : 'Agents Agents Agents'}
+            text={tablet ? 'Willow' : 'Willow Willow Willow'}
             fontSize={tablet ? 60 : 90}
             className="h-full w-full"
             squareSize={2}
