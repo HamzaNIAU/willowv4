@@ -277,13 +277,19 @@ async def auth_callback(
                         <p>Closing this window...</p>
                     </div>
                     <script>
-                        // Detect if we're in a popup using multiple methods
-                        const isPopup = (
-                            window.opener !== null ||  // Has opener reference
-                            window.name === 'youtube-auth' ||  // Named popup window
-                            window.innerWidth <= 700 ||  // Popup size constraints
-                            window.location.search.includes('popup=true')  // Explicit popup parameter
-                        );
+                        console.log('YouTube OAuth Callback Debug:', {{
+                            hasOpener: window.opener !== null,
+                            windowName: window.name,
+                            innerWidth: window.innerWidth,
+                            innerHeight: window.innerHeight,
+                            historyLength: window.history.length,
+                            screenX: window.screenX,
+                            screenY: window.screenY
+                        }});
+                        
+                        // Since this endpoint is ONLY accessed via popup (never direct navigation),
+                        // we can safely assume it's always a popup and act accordingly
+                        const isPopup = true;  // Always treat as popup for social media OAuth
                         
                         if (isPopup) {{
                             // We're in a popup - try to send message to opener
@@ -510,23 +516,28 @@ async def refresh_channel_info(
         
         # Update channel in database
         client = await db.client
+        # Map YouTube fields to unified social_media_accounts fields
         update_data = {
-            "name": channel_info["name"],
+            "account_name": channel_info["name"],
             "username": channel_info.get("username"),
-            "custom_url": channel_info.get("custom_url"),
-            "profile_picture": channel_info.get("profile_picture"),
-            "profile_picture_medium": channel_info.get("profile_picture_medium"),
-            "profile_picture_small": channel_info.get("profile_picture_small"),
-            "description": channel_info.get("description"),
+            "profile_image_url": channel_info.get("profile_picture"),
+            "bio": channel_info.get("description"),
             "subscriber_count": channel_info.get("subscriber_count", 0),
             "view_count": channel_info.get("view_count", 0),
-            "video_count": channel_info.get("video_count", 0),
+            "post_count": channel_info.get("video_count", 0),
             "updated_at": datetime.now(timezone.utc).isoformat(),
+            # Store YouTube-specific data in platform_data
+            "platform_data": {
+                "custom_url": channel_info.get("custom_url"),
+                "profile_picture_medium": channel_info.get("profile_picture_medium"),
+                "profile_picture_small": channel_info.get("profile_picture_small"),
+            }
         }
         
-        result = await client.table("youtube_channels").update(update_data).eq(
+        # FIXED: Update via social_media_accounts table for unified system
+        result = await client.table("social_media_accounts").update(update_data).eq(
             "user_id", user_id
-        ).eq("id", channel_id).execute()
+        ).eq("platform", "youtube").eq("platform_account_id", channel_id).execute()
         
         if not result.data:
             raise HTTPException(status_code=500, detail="Failed to update channel")
@@ -556,7 +567,8 @@ async def debug_channels(
     """Debug endpoint to check channel data"""
     try:
         client = await db.client
-        result = await client.table("youtube_channels").select("*").eq(
+        # FIXED: Use compatibility view that filters by platform='youtube' only
+        result = await client.table("youtube_channels_compat").select("*").eq(
             "user_id", user_id
         ).eq("is_active", True).execute()
         

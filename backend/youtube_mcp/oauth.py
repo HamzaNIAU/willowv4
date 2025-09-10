@@ -218,29 +218,57 @@ class YouTubeOAuthHandler:
             "is_active": True,
         }
         
-        # Upsert channel (update if exists, insert if not)
-        result = await client.table("youtube_channels").upsert(
-            channel_data,
-            on_conflict="id,user_id"
-        ).execute()
+        # Use unified integration service (Postiz style - same as Pinterest!)
+        from services.integration_service import IntegrationService
         
-        if result.data:
-            logger.info(f"Saved YouTube channel {channel_info['id']} for user {user_id} with profile_picture: {channel_info.get('profile_picture')}")
-            
-            # Create MCP toggle entries for all user's agents
-            await self._create_channel_toggles(user_id, channel_info["id"])
-            
-            # Invalidate cache to reflect the newly connected channel
-            try:
-                from services.youtube_channel_cache import YouTubeChannelCacheService
-                cache_service = YouTubeChannelCacheService(self.db)
-                await cache_service.handle_channel_connected(user_id, channel_info["id"])
-            except Exception as e:
-                logger.warning(f"Failed to invalidate cache after channel connection: {e}")
-            
-            return channel_info["id"]
-        else:
-            raise Exception("Failed to save YouTube channel")
+        integration_service = IntegrationService(self.db)
+        
+        # Calculate expires_in for Postiz pattern
+        expires_in = int((expires_at - datetime.now(timezone.utc)).total_seconds()) if expires_at else None
+        
+        # Prepare YouTube-specific platform data (preserve ALL YouTube concepts!)
+        platform_data = {
+            "channel_id": channel_info["id"],
+            "username": channel_info.get("username"),
+            "custom_url": channel_info.get("custom_url"),
+            "description": channel_info.get("description"),
+            "subscriber_count": channel_info.get("subscriber_count", 0),
+            "view_count": channel_info.get("view_count", 0),
+            "video_count": channel_info.get("video_count", 0),
+            "country": channel_info.get("country"),
+            "published_at": channel_info.get("published_at"),
+            "profile_pictures": {
+                "default": channel_info.get("profile_picture"),
+                "medium": channel_info.get("profile_picture_medium"),
+                "small": channel_info.get("profile_picture_small")
+            }
+        }
+        
+        # Save using universal integration service (same method Pinterest uses!)
+        integration_id = await integration_service.create_or_update_integration(
+            user_id=user_id,
+            name=channel_info["name"],
+            picture=channel_info.get("profile_picture"),
+            provider="youtube",  # Platform identifier
+            platform_account_id=channel_info["id"],
+            access_token=access_token,
+            refresh_token=refresh_token,
+            expires_in=expires_in,
+            username=channel_info.get("username"),
+            platform_data=platform_data
+        )
+        
+        logger.info(f"✅ Saved YouTube integration {integration_id} for user {user_id}")
+        
+        # Invalidate cache to reflect the newly connected channel
+        try:
+            from services.youtube_channel_cache import YouTubeChannelCacheService
+            cache_service = YouTubeChannelCacheService(self.db)
+            await cache_service.handle_channel_connected(user_id, channel_info["id"])
+        except Exception as e:
+            logger.warning(f"Failed to invalidate cache after channel connection: {e}")
+        
+        return channel_info["id"]
     
     async def _create_channel_toggles(self, user_id: str, channel_id: str):
         """Create MCP toggle entries for all user's agents when a channel is connected"""

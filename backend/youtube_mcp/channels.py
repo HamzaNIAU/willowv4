@@ -17,7 +17,8 @@ class YouTubeChannelService:
         """Get all active YouTube channels for a user"""
         client = await self.db.client
         
-        result = await client.table("youtube_channels").select("*").eq(
+        # FIXED: Use compatibility view that filters by platform='youtube' only
+        result = await client.table("youtube_channels_compat").select("*").eq(
             "user_id", user_id
         ).eq("is_active", True).order("created_at", desc=True).execute()
         
@@ -47,7 +48,8 @@ class YouTubeChannelService:
         """Get a specific YouTube channel"""
         client = await self.db.client
         
-        result = await client.table("youtube_channels").select("*").eq(
+        # FIXED: Use compatibility view that filters by platform='youtube' only
+        result = await client.table("youtube_channels_compat").select("*").eq(
             "user_id", user_id
         ).eq("id", channel_id).eq("is_active", True).execute()
         
@@ -87,9 +89,10 @@ class YouTubeChannelService:
         # Remove None values
         update_data = {k: v for k, v in update_data.items() if v is not None}
         
-        result = await client.table("youtube_channels").update(update_data).eq(
+        # FIXED: Update via social_media_accounts table for unified system
+        result = await client.table("social_media_accounts").update(update_data).eq(
             "user_id", user_id
-        ).eq("id", channel_id).execute()
+        ).eq("platform", "youtube").eq("platform_account_id", channel_id).execute()
         
         if result.data:
             logger.info(f"Updated stats for channel {channel_id}")
@@ -103,13 +106,13 @@ class YouTubeChannelService:
         
         logger.warning(f"🔄 SMART DEACTIVATION: Marking channel {channel_id} for re-auth instead of disconnecting")
         
-        # FIXED BUG: Don't set is_active=False, just mark for re-authentication
-        result = await client.table("youtube_channels").update({
+        # FIXED: Update via social_media_accounts table for unified system
+        result = await client.table("social_media_accounts").update({
             "needs_reauth": True,  # Mark for re-auth instead of disconnecting
             "last_refresh_error": "Channel marked for re-authentication due to system issues",
             "updated_at": datetime.now(timezone.utc).isoformat(),
             # is_active stays TRUE - preserve connection!
-        }).eq("user_id", user_id).eq("id", channel_id).execute()
+        }).eq("user_id", user_id).eq("platform", "youtube").eq("platform_account_id", channel_id).execute()
         
         if result.data:
             logger.info(f"✅ Smart deactivation: Channel {channel_id} marked for re-auth (connection preserved)")
@@ -121,8 +124,9 @@ class YouTubeChannelService:
         """Check if a channel exists for a user"""
         client = await self.db.client
         
-        result = await client.table("youtube_channels").select("id").eq(
+        # FIXED: Check via social_media_accounts table for unified system
+        result = await client.table("social_media_accounts").select("platform_account_id").eq(
             "user_id", user_id
-        ).eq("id", channel_id).eq("is_active", True).execute()
+        ).eq("platform", "youtube").eq("platform_account_id", channel_id).eq("is_active", True).execute()
         
         return len(result.data) > 0

@@ -39,6 +39,7 @@ from agent.tools.sb_web_dev_tool import SandboxWebDevTool
 from agent.tools.youtube_complete_mcp_tool import YouTubeTool
 from agent.tools.twitter_complete_mcp_tool import TwitterTool
 from agent.tools.instagram_complete_mcp_tool import InstagramTool
+from agent.tools.pinterest_complete_mcp_tool import PinterestTool
 
 load_dotenv()
 
@@ -432,6 +433,92 @@ class ToolManager:
             )
             logger.info(f"✅ Successfully registered Complete Instagram MCP Tool with {len(account_ids)} accounts")
         
+        # Register Pinterest tool if not disabled
+        if 'pinterest_tool' not in disabled_tools:
+            # Use pre-computed Pinterest accounts from agent config or fallback to database
+            account_ids = []
+            account_metadata = []
+            db = None
+            
+            # Check if we have pre-computed accounts from agent config
+            logger.debug(f"Checking for pre-computed Pinterest accounts - agent_config exists: {self.agent_config is not None}, agent_id: {self.agent_id}")
+            if self.agent_config and 'pinterest_accounts' in self.agent_config:
+                account_metadata = self.agent_config['pinterest_accounts']
+                account_ids = [account['id'] for account in account_metadata]
+                logger.info(f"Using pre-computed Pinterest accounts from agent config: {len(account_ids)} accounts")
+            else:
+                # Fallback: Query unified social accounts directly
+                logger.info(f"No pre-computed Pinterest accounts, querying unified social accounts for agent {self.agent_id}")
+                try:
+                    from services.supabase import DBConnection
+                    db = DBConnection()
+                    client = await db.client
+                    
+                    # Query unified social accounts for enabled Pinterest accounts
+                    result = await client.table("agent_social_accounts").select("*").eq(
+                        "agent_id", self.agent_id
+                    ).eq("user_id", self.user_id).eq(
+                        "platform", "pinterest"
+                    ).eq("enabled", True).execute()
+                    
+                    enabled_accounts = []
+                    for account in result.data:
+                        enabled_accounts.append({
+                            "id": account["account_id"],
+                            "name": account["account_name"],
+                            "username": account["username"],
+                            "profile_picture": account["profile_picture"],
+                            "subscriber_count": account["subscriber_count"],
+                            "view_count": account["view_count"],
+                            "video_count": account["video_count"],
+                            "country": account["country"]
+                        })
+                    
+                    account_ids = [account['id'] for account in enabled_accounts]
+                    account_metadata = enabled_accounts
+                    
+                    if account_ids:
+                        logger.info(f"Loaded {len(account_ids)} enabled Pinterest accounts from unified system")
+                    else:
+                        logger.info(f"No Pinterest accounts are enabled for agent {self.agent_id}")
+                        
+                except Exception as e:
+                    logger.warning(f"Could not load Pinterest accounts from unified system: {e}")
+            
+            # Ensure db is available for PinterestTool
+            if db is None:
+                from services.supabase import DBConnection
+                db = DBConnection()
+            
+            # Store account metadata for later use
+            self.pinterest_accounts = account_metadata
+            
+            # Create JWT token for Pinterest tool API calls
+            jwt_secret = os.getenv("SUPABASE_JWT_SECRET", "")
+            jwt_token = None
+            if jwt_secret and self.user_id:
+                payload = {
+                    "sub": self.user_id,
+                    "user_id": self.user_id,
+                    "role": "authenticated"
+                }
+                jwt_token = jwt.encode(payload, jwt_secret, algorithm="HS256")
+                logger.debug(f"Created JWT token for Pinterest tool")
+            
+            # Register complete Pinterest MCP tool
+            logger.info(f"📌 Registering Complete Pinterest MCP Tool for agent {self.agent_id}")
+            self.thread_manager.add_tool(
+                PinterestTool,
+                user_id=self.user_id or "",
+                account_ids=account_ids,
+                account_metadata=account_metadata,
+                jwt_token=jwt_token,
+                agent_id=self.agent_id,
+                thread_id=self.thread_id
+                # MCP pattern - no sandbox dependencies
+            )
+            logger.info(f"✅ Successfully registered Complete Pinterest MCP Tool with {len(account_ids)} accounts")
+        
         # Register LinkedIn tool if not disabled
         if 'linkedin_tool' not in disabled_tools:
             from agent.tools.linkedin_complete_mcp_tool import LinkedInTool
@@ -516,17 +603,35 @@ class ToolManager:
                 # Fallback to database fetch
                 logger.warning(f"No pre-computed Pinterest accounts found in agent config, falling back to database fetch")
                 from services.supabase import DBConnection
-                from pinterest_mcp.accounts import PinterestAccountService
+                from services.social_media_service import UnifiedSocialMediaService
                 db = DBConnection()
                 
                 try:
                     if self.user_id and self.agent_id:
-                        account_service = PinterestAccountService(db)
-                        enabled_accounts = await account_service.get_accounts_for_agent(self.user_id, self.agent_id)
-                        account_ids = [account['id'] for account in enabled_accounts]
-                        account_metadata = enabled_accounts
+                        # Use unified social media service for Pinterest accounts
+                        social_service = UnifiedSocialMediaService(db)
+                        accounts = await social_service.get_accounts(self.user_id, platform="pinterest")
+                        
+                        # Filter for enabled accounts using agent_social_accounts table
+                        client = await db.client
+                        result = await client.table("agent_social_accounts").select("account_id").eq(
+                            "agent_id", self.agent_id
+                        ).eq("user_id", self.user_id).eq(
+                            "platform", "pinterest"
+                        ).eq("enabled", True).execute()
+                        
+                        enabled_account_ids = {row["account_id"] for row in result.data}
+                        enabled_accounts = [
+                            acc for acc in accounts 
+                            if acc["platform_account_id"] in enabled_account_ids
+                        ]
+                        
+                        # Format accounts for the tool
+                        account_metadata = await social_service.format_for_platform("pinterest", enabled_accounts)
+                        account_ids = [account['id'] for account in account_metadata]
+                        
                         if account_ids:
-                            logger.info(f"Loaded {len(account_ids)} enabled Pinterest accounts from database fallback")
+                            logger.info(f"Loaded {len(account_ids)} enabled Pinterest accounts from unified system (fallback)")
                         else:
                             logger.info(f"No Pinterest accounts are enabled for agent {self.agent_id} (fallback)")
                 except Exception as e:

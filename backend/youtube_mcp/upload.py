@@ -87,7 +87,8 @@ class YouTubeUploadService:
         
         # Get channel info
         client = await self.db.client
-        channel_result = await client.table("youtube_channels").select("name").eq(
+        # FIXED: Use compatibility view that filters by platform='youtube' only
+        channel_result = await client.table("youtube_channels_compat").select("name").eq(
             "user_id", user_id
         ).eq("id", channel_id).execute()
         

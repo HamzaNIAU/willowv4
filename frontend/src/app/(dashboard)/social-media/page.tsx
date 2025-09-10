@@ -93,6 +93,19 @@ interface YouTubeChannel {
   created_at: string;
 }
 
+interface PinterestAccount {
+  id: string;
+  name: string;
+  username?: string;
+  profile_picture?: string;
+  profile_picture_medium?: string;
+  profile_picture_small?: string;
+  subscriber_count: number;
+  view_count: number;
+  video_count: number;
+  created_at: string;
+}
+
 interface SocialMediaAccount {
   platform: string;
   id: string;
@@ -132,7 +145,7 @@ interface SocialPlatformGroup {
   icon: any;
   icon_url?: string;
   color: string;
-  accounts: YouTubeChannel[];
+  accounts: (YouTubeChannel | PinterestAccount)[];
   available: boolean;
   description: string;
 }
@@ -151,6 +164,7 @@ export default function SocialMediaPage() {
       const response = await backendApi.get<{ success: boolean; channels: YouTubeChannel[] }>(
         '/youtube/channels'
       );
+      console.log('🐛 DEBUG: YouTube API response:', response.data);
       return response.data.channels;
     },
   });
@@ -166,9 +180,10 @@ export default function SocialMediaPage() {
     queryKey: ['pinterest', 'accounts'],
     queryFn: async () => {
       try {
-        const response = await backendApi.get<{ success: boolean; accounts: YouTubeChannel[] }>(
+        const response = await backendApi.get<{ success: boolean; accounts: PinterestAccount[] }>(
           '/pinterest/accounts'
         );
+        console.log('🐛 DEBUG: Pinterest API response:', response.data);
         return response.data.accounts || [];
       } catch (error) {
         console.warn('Pinterest API not available:', error);
@@ -257,9 +272,68 @@ export default function SocialMediaPage() {
     },
   });
 
+  // Remove Pinterest account
+  const removePinterestAccount = useMutation({
+    mutationFn: async (accountId: string) => {
+      await backendApi.delete(`/pinterest/accounts/${accountId}`);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['pinterest', 'accounts'] });
+      toast.success('Pinterest account disconnected');
+    },
+    onError: (error: any) => {
+      toast.error(error.message || 'Failed to disconnect account');
+    },
+  });
+
   const handleConnectYouTube = () => {
     setConnectingPlatform('youtube');
     initiateYouTubeAuth.mutate();
+  };
+
+  // Initiate Pinterest auth
+  const initiatePinterestAuth = useMutation({
+    mutationFn: async () => {
+      const response = await backendApi.post<{ success: boolean; auth_url: string }>(
+        '/pinterest/auth/initiate'
+      );
+      return response.data;
+    },
+    onSuccess: (data) => {
+      if (data.auth_url) {
+        const popup = window.open(
+          data.auth_url,
+          'pinterest-auth',
+          'width=600,height=700,resizable=yes,scrollbars=yes'
+        );
+        
+        const handleMessage = (event: MessageEvent) => {
+          if (event.data?.type === 'pinterest-auth-success') {
+            popup?.close();
+            queryClient.invalidateQueries({ queryKey: ['pinterest', 'accounts'] });
+            toast.success('Pinterest account connected successfully!');
+            window.removeEventListener('message', handleMessage);
+            setConnectingPlatform(null);
+          } else if (event.data?.type === 'pinterest-auth-error') {
+            popup?.close();
+            toast.error(`Failed to connect: ${event.data.error}`);
+            window.removeEventListener('message', handleMessage);
+            setConnectingPlatform(null);
+          }
+        };
+        
+        window.addEventListener('message', handleMessage);
+      }
+    },
+    onError: (error: any) => {
+      toast.error(error.message || 'Failed to initiate Pinterest authentication');
+      setConnectingPlatform(null);
+    },
+  });
+
+  const handleConnectPinterest = () => {
+    setConnectingPlatform('pinterest');
+    initiatePinterestAuth.mutate();
   };
 
   // Initiate Instagram auth
@@ -442,51 +516,6 @@ export default function SocialMediaPage() {
     initiateTikTokAuth.mutate();
   };
 
-  // Initiate Pinterest auth
-  const initiatePinterestAuth = useMutation({
-    mutationFn: async () => {
-      const response = await backendApi.post<{ success: boolean; auth_url: string }>(
-        '/pinterest/auth/initiate'
-      );
-      return response.data;
-    },
-    onSuccess: (data) => {
-      if (data.auth_url) {
-        const popup = window.open(
-          data.auth_url,
-          'pinterest-auth',
-          'width=600,height=700,resizable=yes,scrollbars=yes'
-        );
-        
-        const handleMessage = (event: MessageEvent) => {
-          if (event.data?.type === 'pinterest-auth-success') {
-            popup?.close();
-            queryClient.invalidateQueries({ queryKey: ['pinterest', 'accounts'] });
-            toast.success('Pinterest account connected successfully!');
-            window.removeEventListener('message', handleMessage);
-            setConnectingPlatform(null);
-          } else if (event.data?.type === 'pinterest-auth-error') {
-            popup?.close();
-            toast.error(`Failed to connect: ${event.data.error}`);
-            window.removeEventListener('message', handleMessage);
-            setConnectingPlatform(null);
-          }
-        };
-        
-        window.addEventListener('message', handleMessage);
-      }
-    },
-    onError: (error: any) => {
-      toast.error(error.message || 'Failed to initiate Pinterest authentication');
-      setConnectingPlatform(null);
-    },
-  });
-
-  const handleConnectPinterest = () => {
-    setConnectingPlatform('pinterest');
-    initiatePinterestAuth.mutate();
-  };
-
   const formatCount = (count: number): string => {
     if (count >= 1_000_000) {
       return `${(count / 1_000_000).toFixed(1)}M`;
@@ -577,7 +606,7 @@ export default function SocialMediaPage() {
     }
 
     return platforms;
-  }, [youtubeChannels, instagramAccounts, twitterAccounts, linkedinAccounts, tiktokAccounts, pinterestAccounts, searchQuery]);
+  }, [youtubeChannels, linkedinAccounts, pinterestAccounts, searchQuery]);
 
   const connectedPlatforms = socialPlatforms.filter(p => p.accounts.length > 0);
   const availablePlatforms = socialPlatforms.filter(p => p.available && p.accounts.length === 0);
@@ -634,11 +663,8 @@ export default function SocialMediaPage() {
                     <Button
                       onClick={
                         platform.name === 'YouTube' ? handleConnectYouTube :
-                        platform.name === 'Instagram' ? handleConnectInstagram :
-                        platform.name === 'X (Twitter)' ? handleConnectTwitter :
-                        platform.name === 'LinkedIn' ? handleConnectLinkedIn :
-                        platform.name === 'TikTok' ? handleConnectTikTok :
                         platform.name === 'Pinterest' ? handleConnectPinterest :
+                        platform.name === 'LinkedIn' ? handleConnectLinkedIn :
                         undefined
                       }
                       disabled={!platform.available || connectingPlatform === platform.name.toLowerCase()}
@@ -682,10 +708,15 @@ export default function SocialMediaPage() {
                                     }}
                                   />
                                 ) : null}
-                                <div className={`h-10 w-10 rounded-full bg-red-100 dark:bg-red-900/20 flex items-center justify-center ${(channel.profile_picture_medium || channel.profile_picture || channel.profile_picture_small) ? 'hidden' : ''}`}>
+                                <div className={`h-10 w-10 rounded-full ${
+                                  platform.name === 'Pinterest' ? 'bg-red-100 dark:bg-red-900/20' : 
+                                  'bg-red-100 dark:bg-red-900/20'
+                                } flex items-center justify-center ${
+                                  (channel.profile_picture_medium || channel.profile_picture || channel.profile_picture_small) ? 'hidden' : ''
+                                }`}>
                                   <img 
-                                    src="/platforms/youtube.svg" 
-                                    alt="YouTube"
+                                    src={platform.name === 'Pinterest' ? '/platforms/pinterest.png' : '/platforms/youtube.svg'} 
+                                    alt={platform.name}
                                     className="h-5 w-5"
                                   />
                                 </div>
@@ -728,23 +759,47 @@ export default function SocialMediaPage() {
                                 </DropdownMenuTrigger>
                                 <DropdownMenuContent align="end">
                                   <DropdownMenuItem 
-                                    onClick={() => window.open(`https://youtube.com/channel/${channel.id}`, '_blank')}
-                                  >
-                                    <ExternalLink className="h-4 w-4 mr-2" />
-                                    View Channel
-                                  </DropdownMenuItem>
-                                  <DropdownMenuItem
                                     onClick={() => {
-                                      setSelectedChannel(channel);
-                                      setShowMcpDialog(true);
+                                      const url = platform.name === 'YouTube' 
+                                        ? `https://youtube.com/channel/${channel.id}`
+                                        : platform.name === 'Pinterest'
+                                        ? `https://pinterest.com/${channel.username || 'profile'}`
+                                        : '#';
+                                      window.open(url, '_blank');
                                     }}
                                   >
-                                    <Settings className="h-4 w-4 mr-2" />
-                                    MCP Settings
+                                    <ExternalLink className="h-4 w-4 mr-2" />
+                                    View {platform.name === 'Pinterest' ? 'Profile' : 'Channel'}
                                   </DropdownMenuItem>
-                                  <DropdownMenuSeparator />
+                                  {platform.name === 'YouTube' && (
+                                    <>
+                                      <DropdownMenuItem
+                                        onClick={() => {
+                                          setSelectedChannel(channel);
+                                          setShowMcpDialog(true);
+                                        }}
+                                      >
+                                        <Settings className="h-4 w-4 mr-2" />
+                                        MCP Settings
+                                      </DropdownMenuItem>
+                                      <DropdownMenuSeparator />
+                                    </>
+                                  )}
+                                  {platform.name !== 'YouTube' && <DropdownMenuSeparator />}
                                   <DropdownMenuItem
-                                    onClick={() => removeYouTubeChannel.mutate(channel.id)}
+                                    onClick={() => {
+                                      console.log('🐛 DEBUG: platform.name =', platform.name, 'channel.id =', channel.id);
+                                      console.log('🐛 DEBUG: platform =', platform);
+                                      if (platform.name === 'YouTube') {
+                                        console.log('🐛 Calling YouTube disconnect');
+                                        removeYouTubeChannel.mutate(channel.id);
+                                      } else if (platform.name === 'Pinterest') {
+                                        console.log('🐛 Calling Pinterest disconnect');
+                                        removePinterestAccount.mutate(channel.id);
+                                      } else {
+                                        console.log('🐛 No platform match!', platform.name);
+                                      }
+                                    }}
                                     className="text-destructive"
                                   >
                                     <Trash2 className="h-4 w-4 mr-2" />
@@ -785,11 +840,8 @@ export default function SocialMediaPage() {
                       <Button
                         onClick={
                           platform.name === 'YouTube' ? handleConnectYouTube :
-                          platform.name === 'Instagram' ? handleConnectInstagram :
-                          platform.name === 'X (Twitter)' ? handleConnectTwitter :
-                          platform.name === 'LinkedIn' ? handleConnectLinkedIn :
-                          platform.name === 'TikTok' ? handleConnectTikTok :
                           platform.name === 'Pinterest' ? handleConnectPinterest :
+                          platform.name === 'LinkedIn' ? handleConnectLinkedIn :
                           undefined
                         }
                         disabled={connectingPlatform === platform.name.toLowerCase()}
