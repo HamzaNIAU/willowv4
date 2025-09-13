@@ -63,51 +63,53 @@ class PinterestOAuthHandler:
         return f"{self.OAUTH_URL}?{urlencode(params)}"
     
     async def exchange_code_for_tokens(self, code: str) -> Tuple[str, str, datetime]:
-        """Exchange authorization code for access and refresh tokens - Following YouTube pattern"""
-        async with aiohttp.ClientSession() as session:
+        """Exchange authorization code for access and refresh tokens.
+
+        Pinterest OAuth v5 expects application/x-www-form-urlencoded params and
+        HTTP Basic auth with client_id:client_secret.
+        """
+        basic = base64.b64encode(f"{self.client_id}:{self.client_secret}".encode()).decode()
+        headers = {
+            "Authorization": f"Basic {basic}",
+            "Content-Type": "application/x-www-form-urlencoded",
+        }
+        async with aiohttp.ClientSession(headers=headers) as session:
             data = {
-                "code": code,
-                "client_id": self.client_id,
-                "client_secret": self.client_secret,
-                "redirect_uri": self.redirect_uri,
                 "grant_type": "authorization_code",
+                "code": code,
+                "redirect_uri": self.redirect_uri,
             }
-            
             async with session.post(self.TOKEN_URL, data=data) as response:
                 if response.status != 200:
                     error_text = await response.text()
                     raise Exception(f"Pinterest token exchange failed: {error_text}")
-                
                 token_data = await response.json()
-                
                 access_token = token_data["access_token"]
                 refresh_token = token_data.get("refresh_token")
-                expires_in = token_data.get("expires_in", 2592000)  # Default 30 days for Pinterest
+                expires_in = token_data.get("expires_in", 2592000)
                 expires_at = datetime.now(timezone.utc) + timedelta(seconds=expires_in)
-                
                 return access_token, refresh_token, expires_at
     
     async def refresh_access_token(self, refresh_token: str) -> Tuple[str, datetime]:
-        """Refresh an expired access token - Following YouTube pattern"""
-        async with aiohttp.ClientSession() as session:
+        """Refresh an expired access token (Basic auth form-encoded)."""
+        basic = base64.b64encode(f"{self.client_id}:{self.client_secret}".encode()).decode()
+        headers = {
+            "Authorization": f"Basic {basic}",
+            "Content-Type": "application/x-www-form-urlencoded",
+        }
+        async with aiohttp.ClientSession(headers=headers) as session:
             data = {
                 "grant_type": "refresh_token",
                 "refresh_token": refresh_token,
-                "client_id": self.client_id,
-                "client_secret": self.client_secret,
             }
-            
             async with session.post(self.TOKEN_URL, data=data) as response:
                 if response.status != 200:
                     error_text = await response.text()
                     raise Exception(f"Pinterest token refresh failed: {error_text}")
-                
                 token_data = await response.json()
-                
                 access_token = token_data["access_token"]
                 expires_in = token_data.get("expires_in", 2592000)
                 expires_at = datetime.now(timezone.utc) + timedelta(seconds=expires_in)
-                
                 return access_token, expires_at
     
     async def get_user_info(self, access_token: str) -> Dict[str, Any]:

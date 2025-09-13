@@ -365,3 +365,68 @@ class UnifiedIntegrationService:
         except Exception as e:
             logger.error(f"❌ Failed to remove integration: {e}")
             return False
+
+    async def set_agent_integration_enabled(
+        self,
+        agent_id: str,
+        user_id: str,
+        platform: str,
+        platform_account_id: str,
+        enabled: bool
+    ) -> bool:
+        """Enable/disable a specific integration for a given agent.
+
+        Also mirrors the state to agent_social_accounts for real-time UI updates.
+        """
+        try:
+            client = await self.db.client
+            # Find the integration row
+            integ_result = await client.table('integrations').select('*').eq(
+                'user_id', user_id
+            ).eq('platform', platform).eq('platform_account_id', platform_account_id).single().execute()
+            if not integ_result.data:
+                raise Exception('Integration not found')
+
+            integration = integ_result.data
+            platform_data = json.loads(integration['platform_data']) if integration.get('platform_data') else {}
+
+            # Upsert into agent_integrations
+            agent_integration_data = {
+                'agent_id': agent_id,
+                'user_id': user_id,
+                'integration_id': integration['id'],
+                'enabled': enabled,
+                'cached_name': integration.get('name'),
+                'cached_picture': integration.get('picture'),
+                'cached_stats': json.dumps(self._extract_stats_for_platform(platform, platform_data))
+            }
+            await client.table('agent_integrations').upsert(
+                agent_integration_data,
+                on_conflict='agent_id,user_id,integration_id'
+            ).execute()
+
+            # Mirror to agent_social_accounts for real-time menus
+            try:
+                mirror = {
+                    'agent_id': agent_id,
+                    'user_id': user_id,
+                    'platform': platform,
+                    'account_id': platform_account_id,
+                    'account_name': integration.get('name'),
+                    'username': platform_data.get('username'),
+                    'profile_picture': integration.get('picture'),
+                    'enabled': enabled,
+                    'updated_at': datetime.now(timezone.utc).isoformat()
+                }
+                await client.table('agent_social_accounts').upsert(
+                    mirror,
+                    on_conflict='agent_id,user_id,platform,account_id'
+                ).execute()
+            except Exception as mirror_err:
+                logger.warning(f"Mirror to agent_social_accounts failed: {mirror_err}")
+
+            logger.info(f"🔁 Set agent integration enabled: agent={agent_id}, platform={platform}, account={platform_account_id} → {enabled}")
+            return True
+        except Exception as e:
+            logger.error(f"❌ Failed to set agent integration enabled: {e}")
+            return False

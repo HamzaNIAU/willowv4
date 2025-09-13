@@ -3920,6 +3920,7 @@ async def upload_agent_profile_image(
 
 # MCP Toggle Management Endpoints
 from services.mcp_toggles import MCPToggleService
+from services.unified_integration_service import UnifiedIntegrationService
 
 class MCPToggleRequest(BaseModel):
     mcp_id: str
@@ -3927,6 +3928,12 @@ class MCPToggleRequest(BaseModel):
 
 class MCPTogglesResponse(BaseModel):
     toggles: Dict[str, bool]
+
+
+class IntegrationToggleRequest(BaseModel):
+    platform: str
+    account_id: str
+    enabled: bool
 
 @router.get("/agents/{agent_id}/mcp-toggles", response_model=MCPTogglesResponse)
 async def get_agent_mcp_toggles(
@@ -3994,6 +4001,40 @@ async def get_enabled_mcps(
         
     except Exception as e:
         logger.error(f"Failed to get enabled MCPs: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/agents/{agent_id}/integration-toggle")
+async def update_agent_integration_toggle(
+    agent_id: str,
+    request: IntegrationToggleRequest,
+    user_id: str = Depends(get_current_user_id_from_jwt)
+):
+    """Enable/disable an integration for an agent (universal system).
+
+    Mirrors state to agent_social_accounts for real-time UI compatibility.
+    """
+    try:
+        # Basic validation
+        if not request.platform or not request.account_id:
+            raise HTTPException(status_code=400, detail="platform and account_id are required")
+
+        integration_service = UnifiedIntegrationService(db)
+        success = await integration_service.set_agent_integration_enabled(
+            agent_id=agent_id,
+            user_id=user_id,
+            platform=request.platform.lower(),
+            platform_account_id=request.account_id,
+            enabled=request.enabled
+        )
+        if not success:
+            raise HTTPException(status_code=500, detail="Failed to update agent integration")
+
+        return {"success": True, "platform": request.platform, "account_id": request.account_id, "enabled": request.enabled}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to update agent integration: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/agents/{agent_id}/sync-social-toggles")

@@ -284,6 +284,80 @@ export const MCPConnectionsDropdown: React.FC<MCPConnectionsDropdownProps> = ({
                         </div>
                       </>
                     )}
+                    {socialMediaByPlatform.pinterest && (
+                      <>
+                        <div className="px-3 py-1.5 text-xs font-medium text-muted-foreground flex items-center gap-1.5">
+                          <img 
+                            src="/platforms/pinterest.png" 
+                            alt="Pinterest"
+                            className="h-3 w-3"
+                          />
+                          Pinterest
+                        </div>
+                        <div className="px-3 pb-2">
+                          {socialMediaByPlatform.pinterest.map((mcp: any, index: number) => {
+                            const displayName = mcp.name || 'Unknown';
+                            const mcpId = mcp.qualifiedName || `${displayName}-${index}`;
+                            const isEnabled = localToggles[mcpId] ?? (mcp.enabled !== false);
+                            const isConnected = !!mcp.config;
+                            const profilePicture = mcp.profile_picture || mcp.config?.profile_picture || mcp.icon_url;
+                            return (
+                              <div
+                                key={mcpId}
+                                className="flex items-center justify-between rounded-md px-2 py-1.5 hover:bg-accent"
+                              >
+                                <div className="flex items-center gap-2">
+                                  {profilePicture ? (
+                                    <>
+                                      <img
+                                        src={profilePicture}
+                                        alt={displayName}
+                                        className="h-5 w-5 rounded-full object-cover border border-border/50"
+                                        onError={(e) => {
+                                          console.log('Failed to load profile picture for:', displayName, profilePicture);
+                                          (e.target as HTMLImageElement).style.display = 'none';
+                                          (e.target as HTMLImageElement).nextElementSibling?.classList.remove('hidden');
+                                        }}
+                                      />
+                                      <img 
+                                        src="/platforms/pinterest.png" 
+                                        alt="Pinterest"
+                                        className="h-5 w-5 hidden"
+                                      />
+                                    </>
+                                  ) : (
+                                    <img 
+                                      src="/platforms/pinterest.png" 
+                                      alt="Pinterest"
+                                      className="h-5 w-5"
+                                    />
+                                  )}
+                                  <span className="text-sm">{displayName}</span>
+                                </div>
+                                {isConnected ? (
+                                  <Switch
+                                    checked={isEnabled}
+                                    onCheckedChange={() => handleToggle(mcpId)}
+                                    className="scale-90"
+                                  />
+                                ) : (
+                                  <button
+                                    className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+                                    onClick={() => {
+                                      router.push('/social-media');
+                                      setIsOpen(false);
+                                    }}
+                                  >
+                                    Connect
+                                    <ChevronRight className="h-3 w-3" />
+                                  </button>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </>
+                    )}
                     
                     {/* Add other social media platforms here in the future */}
                     {socialMediaByPlatform.instagram && (

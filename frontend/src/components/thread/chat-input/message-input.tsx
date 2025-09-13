@@ -17,6 +17,7 @@ import { TooltipProvider, TooltipTrigger } from '@radix-ui/react-tooltip';
 import { BillingModal } from '@/components/billing/billing-modal';
 import { handleFiles } from './file-upload-handler';
 import { MCPConnectionsDropdown } from './mcp-connections-dropdown';
+import { EnabledSocialSummary } from './enabled-social-summary';
 
 interface MessageInputProps {
   value: string;
@@ -220,6 +221,7 @@ export const MessageInput = forwardRef<HTMLTextAreaElement, MessageInputProps>(
         <div className="flex items-center justify-between mt-0 mb-1 px-2">
           <div className="flex items-center gap-2">
             {renderDropdown()}
+            <EnabledSocialSummary agentId={selectedAgentId} />
             
             {!hideAttachments && (
               <FileUploadHandler

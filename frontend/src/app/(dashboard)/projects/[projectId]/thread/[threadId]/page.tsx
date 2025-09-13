@@ -307,7 +307,8 @@ export default function ThreadPage({
           threadId,
           options: {
             ...options,
-            agent_id: selectedAgentId
+            // Force default agent in single‑agent mode or when selection is missing
+            agent_id: selectedAgentId || 'suna-default'
           }
         });
 

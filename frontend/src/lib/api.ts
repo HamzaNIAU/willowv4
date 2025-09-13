@@ -690,7 +690,7 @@ export const startAgent = async (
     }
 
     const defaultOptions = {
-      model_name: 'claude-3-7-sonnet-latest',
+      model_name: 'gpt-5-mini',
       enable_thinking: false,
       reasoning_effort: 'low',
       stream: true,

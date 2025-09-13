@@ -14,66 +14,116 @@ class YouTubeChannelService:
         self.db = db
     
     async def get_user_channels(self, user_id: str) -> List[Dict[str, Any]]:
-        """Get all active YouTube channels for a user"""
+        """Get all active YouTube channels for a user.
+
+        Fallback order for maximum compatibility:
+        1) youtube_channels_compat view (preferred, unified model)
+        2) social_media_accounts where platform='youtube'
+        3) legacy youtube_channels table
+        """
         client = await self.db.client
-        
-        # FIXED: Use compatibility view that filters by platform='youtube' only
-        result = await client.table("youtube_channels_compat").select("*").eq(
-            "user_id", user_id
-        ).eq("is_active", True).order("created_at", desc=True).execute()
-        
-        channels = []
-        for channel in result.data:
-            channels.append({
-                "id": channel["id"],
-                "name": channel["name"],
-                "username": channel.get("username"),
-                "custom_url": channel.get("custom_url"),
-                "profile_picture": channel.get("profile_picture"),
-                "profile_picture_medium": channel.get("profile_picture_medium"),
-                "profile_picture_small": channel.get("profile_picture_small"),
-                "description": channel.get("description"),
-                "subscriber_count": channel.get("subscriber_count", 0),
-                "view_count": channel.get("view_count", 0),
-                "video_count": channel.get("video_count", 0),
-                "country": channel.get("country"),
-                "published_at": channel.get("published_at"),
-                "created_at": channel.get("created_at"),
-                "updated_at": channel.get("updated_at"),
-            })
-        
-        return channels
+
+        def _row_to_channel(row: Dict[str, Any]) -> Dict[str, Any]:
+            return {
+                "id": row.get("id") or row.get("platform_account_id"),
+                "name": row.get("name") or row.get("account_name"),
+                "username": row.get("username"),
+                "custom_url": row.get("custom_url") or (row.get("platform_data", {}) or {}).get("custom_url"),
+                "profile_picture": row.get("profile_picture") or row.get("profile_image_url"),
+                "profile_picture_medium": row.get("profile_picture_medium") or (row.get("platform_data", {}) or {}).get("profile_picture_medium"),
+                "profile_picture_small": row.get("profile_picture_small") or (row.get("platform_data", {}) or {}).get("profile_picture_small"),
+                "description": row.get("description") or row.get("bio"),
+                "subscriber_count": row.get("subscriber_count", 0),
+                "view_count": row.get("view_count", 0),
+                "video_count": row.get("video_count") if "video_count" in row else row.get("post_count", 0),
+                "country": row.get("country") or (row.get("platform_data", {}) or {}).get("country"),
+                "published_at": row.get("published_at") or (row.get("platform_data", {}) or {}).get("published_at"),
+                "created_at": row.get("created_at"),
+                "updated_at": row.get("updated_at"),
+            }
+
+        # Attempt 1: unified compatibility view
+        try:
+            result = await client.table("youtube_channels_compat").select("*").eq(
+                "user_id", user_id
+            ).eq("is_active", True).order("created_at", desc=True).execute()
+            return [_row_to_channel(ch) for ch in result.data]
+        except Exception as e:
+            logger.warning(f"youtube_channels_compat not available, falling back (error: {e})")
+
+        # Attempt 2: unified social_media_accounts
+        try:
+            result = await client.table("social_media_accounts").select("*").eq(
+                "user_id", user_id
+            ).eq("platform", "youtube").eq("is_active", True).order("created_at", desc=True).execute()
+            return [_row_to_channel(ch) for ch in result.data]
+        except Exception as e:
+            logger.warning(f"social_media_accounts fallback failed, trying legacy table (error: {e})")
+
+        # Attempt 3: legacy table
+        try:
+            result = await client.table("youtube_channels").select("*").eq(
+                "user_id", user_id
+            ).eq("is_active", True).order("created_at", desc=True).execute()
+            return [_row_to_channel(ch) for ch in result.data]
+        except Exception as e:
+            logger.error(f"All fallbacks failed for get_user_channels: {e}")
+            return []
     
     async def get_channel(self, user_id: str, channel_id: str) -> Optional[Dict[str, Any]]:
-        """Get a specific YouTube channel"""
+        """Get a specific YouTube channel with robust fallbacks (compat view → unified table → legacy)."""
         client = await self.db.client
-        
-        # FIXED: Use compatibility view that filters by platform='youtube' only
-        result = await client.table("youtube_channels_compat").select("*").eq(
-            "user_id", user_id
-        ).eq("id", channel_id).eq("is_active", True).execute()
-        
-        if not result.data:
-            return None
-        
-        channel = result.data[0]
-        return {
-            "id": channel["id"],
-            "name": channel["name"],
-            "username": channel.get("username"),
-            "custom_url": channel.get("custom_url"),
-            "profile_picture": channel.get("profile_picture"),
-            "profile_picture_medium": channel.get("profile_picture_medium"),
-            "profile_picture_small": channel.get("profile_picture_small"),
-            "description": channel.get("description"),
-            "subscriber_count": channel.get("subscriber_count", 0),
-            "view_count": channel.get("view_count", 0),
-            "video_count": channel.get("video_count", 0),
-            "country": channel.get("country"),
-            "published_at": channel.get("published_at"),
-            "created_at": channel.get("created_at"),
-            "updated_at": channel.get("updated_at"),
-        }
+
+        def _row_to_channel(row: Dict[str, Any]) -> Dict[str, Any]:
+            return {
+                "id": row.get("id") or row.get("platform_account_id"),
+                "name": row.get("name") or row.get("account_name"),
+                "username": row.get("username"),
+                "custom_url": row.get("custom_url") or (row.get("platform_data", {}) or {}).get("custom_url"),
+                "profile_picture": row.get("profile_picture") or row.get("profile_image_url"),
+                "profile_picture_medium": row.get("profile_picture_medium") or (row.get("platform_data", {}) or {}).get("profile_picture_medium"),
+                "profile_picture_small": row.get("profile_picture_small") or (row.get("platform_data", {}) or {}).get("profile_picture_small"),
+                "description": row.get("description") or row.get("bio"),
+                "subscriber_count": row.get("subscriber_count", 0),
+                "view_count": row.get("view_count", 0),
+                "video_count": row.get("video_count") if "video_count" in row else row.get("post_count", 0),
+                "country": row.get("country") or (row.get("platform_data", {}) or {}).get("country"),
+                "published_at": row.get("published_at") or (row.get("platform_data", {}) or {}).get("published_at"),
+                "created_at": row.get("created_at"),
+                "updated_at": row.get("updated_at"),
+            }
+
+        # Attempt 1: compat view
+        try:
+            result = await client.table("youtube_channels_compat").select("*").eq(
+                "user_id", user_id
+            ).eq("id", channel_id).eq("is_active", True).execute()
+            if result.data:
+                return _row_to_channel(result.data[0])
+        except Exception as e:
+            logger.warning(f"youtube_channels_compat not available for single fetch, fallback (error: {e})")
+
+        # Attempt 2: unified table
+        try:
+            result = await client.table("social_media_accounts").select("*").eq(
+                "user_id", user_id
+            ).eq("platform", "youtube").eq("platform_account_id", channel_id).eq("is_active", True).execute()
+            if result.data:
+                return _row_to_channel(result.data[0])
+        except Exception as e:
+            logger.warning(f"social_media_accounts fallback failed for single fetch, trying legacy (error: {e})")
+
+        # Attempt 3: legacy table
+        try:
+            result = await client.table("youtube_channels").select("*").eq(
+                "user_id", user_id
+            ).eq("id", channel_id).eq("is_active", True).execute()
+            if result.data:
+                return _row_to_channel(result.data[0])
+        except Exception as e:
+            logger.error(f"All fallbacks failed for get_channel: {e}")
+
+        return None
     
     async def update_channel_stats(self, user_id: str, channel_id: str, stats: Dict[str, Any]) -> bool:
         """Update channel statistics"""

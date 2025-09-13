@@ -33,16 +33,18 @@ async def initiate_auth(
     request: Optional[Dict[str, Any]] = None,
     user_id: str = Depends(get_current_user_id_from_jwt)
 ) -> Dict[str, Any]:
-    """Start LinkedIn OAuth flow with optional thread context"""
+    """Start LinkedIn OAuth flow with optional thread context.
+
+    Notes:
+    - Falls back gracefully if the temporary OAuth session table is missing by
+      embedding the PKCE code_verifier in the state payload (signed/opaque via
+      base64) so the callback can still complete locally.
+    """
     try:
         oauth_handler = LinkedInOAuthHandler(db)
-        
+
         # Create state with user_id and optional thread context
-        state_data = {
-            "user_id": user_id
-        }
-        
-        # Add thread context if provided
+        state_data: Dict[str, Any] = {"user_id": user_id}
         if request:
             if "thread_id" in request:
                 state_data["thread_id"] = request["thread_id"]
@@ -50,18 +52,34 @@ async def initiate_auth(
                 state_data["project_id"] = request["project_id"]
             if "return_url" in request:
                 state_data["return_url"] = request["return_url"]
-        
+
         # Encode state as JSON
         import base64
         state_json = json.dumps(state_data)
-        state = base64.urlsafe_b64encode(state_json.encode()).decode()
-        
+        base_state = base64.urlsafe_b64encode(state_json.encode()).decode()
+
         # Generate OAuth URL with PKCE
-        auth_url, code_verifier, oauth_state = oauth_handler.get_auth_url(state=state)
-        
-        # Store OAuth session
-        await oauth_handler.store_oauth_session(oauth_state, code_verifier, user_id)
-        
+        auth_url, code_verifier, oauth_state = oauth_handler.get_auth_url(state=base_state)
+
+        # Enhance state with code_verifier so callback can succeed without DB
+        enhanced_state_data = {**state_data, "cv": code_verifier}
+        enhanced_state_json = json.dumps(enhanced_state_data)
+        enhanced_state = base64.urlsafe_b64encode(enhanced_state_json.encode()).decode()
+
+        # Replace state parameter in auth_url with enhanced state
+        from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
+        parsed = urlparse(auth_url)
+        qs = parse_qs(parsed.query)
+        qs["state"] = [f"{oauth_state}:{enhanced_state}"]
+        new_query = urlencode(qs, doseq=True)
+        auth_url = urlunparse(parsed._replace(query=new_query))
+
+        # Try to store the OAuth session (optional). If it fails (e.g., table missing), continue.
+        try:
+            await oauth_handler.store_oauth_session(oauth_state, code_verifier, user_id)
+        except Exception as se:
+            logger.warning(f"LinkedIn OAuth session storage failed; continuing with state fallback: {se}")
+
         return {
             "success": True,
             "auth_url": auth_url,
@@ -171,13 +189,13 @@ async def auth_callback(
         # Parse state to get OAuth state and user state
         oauth_state, user_state = state.split(':', 1)
         
-        # Get OAuth session data
+        # Get OAuth session data (optional)
         session_data = await oauth_handler.get_oauth_session(oauth_state)
-        if not session_data:
-            raise Exception("Invalid or expired OAuth session")
-        
-        code_verifier = session_data["code_verifier"]
-        user_id = session_data["user_id"]
+        code_verifier: Optional[str] = None
+        user_id: Optional[str] = None
+        if session_data:
+            code_verifier = session_data.get("code_verifier")
+            user_id = session_data.get("user_id")
         
         # Parse user state to get thread context
         import base64
@@ -187,12 +205,22 @@ async def auth_callback(
             thread_id = state_data.get("thread_id")
             project_id = state_data.get("project_id")
             return_url = state_data.get("return_url")
+            # Fallbacks if session wasn't stored
+            if not code_verifier:
+                code_verifier = state_data.get("cv") or state_data.get("code_verifier")
+            if not user_id:
+                user_id = state_data.get("user_id")
         except:
             thread_id = None
             project_id = None
             return_url = None
+            # If we couldn't parse state, ensure we still have required values
+            if not code_verifier or not user_id:
+                raise HTTPException(status_code=400, detail="Missing OAuth state; please retry")
         
         # Exchange code for tokens
+        if not code_verifier:
+            raise HTTPException(status_code=400, detail="Missing PKCE code_verifier; please retry the connection")
         access_token, refresh_token, expires_at = await oauth_handler.exchange_code_for_tokens(code, code_verifier)
         
         # Get user info

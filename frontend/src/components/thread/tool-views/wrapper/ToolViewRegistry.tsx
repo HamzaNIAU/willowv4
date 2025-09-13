@@ -35,7 +35,12 @@ import { SheetsToolView } from '../sheets-tools/sheets-tool-view';
 import { GetProjectStructureView } from '../web-dev/GetProjectStructureView';
 import { ImageEditGenerateToolView } from '../image-edit-generate-tool/ImageEditGenerateToolView';
 import { YouTubeToolView } from '../YouTubeToolView';
+import { PinterestToolView } from '../PinterestToolView';
 import { YouTubeUploadHistoryView } from '../YouTubeUploadHistoryView';
+import { InstagramToolView } from '../InstagramToolView';
+import { TwitterToolView } from '../TwitterToolView';
+import { LinkedInToolView } from '../LinkedInToolView';
+import { TikTokToolView } from '../TikTokToolView';
 
 
 export type ToolViewComponent = React.ComponentType<ToolViewProps>;
@@ -133,6 +138,67 @@ const defaultRegistry: ToolViewRegistryType = {
   'youtube_manage_video': YouTubeToolView,
   'youtube_smart_search': YouTubeToolView,
   'youtube_check_upload_status': YouTubeUploadHistoryView,
+
+  // Pinterest tool views
+  // Hyphenated versions
+  'pinterest-authenticate': PinterestToolView,
+  'pinterest-accounts': PinterestToolView,
+  'pinterest-create-pin': PinterestToolView,
+  'pinterest-pin-status': PinterestToolView,
+  'pinterest-account-boards': PinterestToolView,
+  'pinterest-recent-pins': PinterestToolView,
+  // Underscore versions
+  'pinterest_authenticate': PinterestToolView,
+  'pinterest_accounts': PinterestToolView,
+  'pinterest_create_pin': PinterestToolView,
+  'pinterest_pin_status': PinterestToolView,
+  'pinterest_account_boards': PinterestToolView,
+  'pinterest_recent_pins': PinterestToolView,
+
+  // Instagram
+  'instagram-authenticate': InstagramToolView,
+  'instagram-accounts': InstagramToolView,
+  'instagram-create-post': InstagramToolView,
+  'instagram-create-story': InstagramToolView,
+  'instagram-get-posts': InstagramToolView,
+  'instagram_authenticate': InstagramToolView,
+  'instagram_accounts': InstagramToolView,
+  'instagram_create_post': InstagramToolView,
+  'instagram_create_story': InstagramToolView,
+  'instagram_get_posts': InstagramToolView,
+
+  // Twitter (X)
+  'twitter-authenticate': TwitterToolView,
+  'twitter-accounts': TwitterToolView,
+  'twitter-create-tweet': TwitterToolView,
+  'twitter-check-tweet-status': TwitterToolView,
+  'twitter-search-tweets': TwitterToolView,
+  'twitter_authenticate': TwitterToolView,
+  'twitter_accounts': TwitterToolView,
+  'twitter_create_tweet': TwitterToolView,
+  'twitter_check_tweet_status': TwitterToolView,
+  'twitter_search_tweets': TwitterToolView,
+
+  // LinkedIn
+  'linkedin-authenticate': LinkedInToolView,
+  'linkedin-accounts': LinkedInToolView,
+  'linkedin-create-post': LinkedInToolView,
+  'linkedin-post-status': LinkedInToolView,
+  'linkedin-account-posts': LinkedInToolView,
+  'linkedin-auth': LinkedInToolView,
+  'linkedin_authenticate': LinkedInToolView,
+  'linkedin_accounts': LinkedInToolView,
+  'linkedin_create_post': LinkedInToolView,
+  'linkedin_post_status': LinkedInToolView,
+  'linkedin_account_posts': LinkedInToolView,
+
+  // TikTok
+  'tiktok-authenticate': TikTokToolView,
+  'tiktok-accounts': TikTokToolView,
+  'tiktok-upload-video': TikTokToolView,
+  'tiktok_authenticate': TikTokToolView,
+  'tiktok_accounts': TikTokToolView,
+  'tiktok_upload_video': TikTokToolView,
 
   'get-project-structure': GetProjectStructureView,
   'list-web-projects': GenericToolView,

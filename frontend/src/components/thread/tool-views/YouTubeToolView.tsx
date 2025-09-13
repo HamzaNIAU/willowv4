@@ -24,6 +24,8 @@ import { toast } from 'sonner';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { YouTubeUploadResultView } from './YouTubeUploadResultView';
 import { YouTubeUploadProgressView } from './YouTubeUploadProgressView';
+import { useAgentSelection } from '@/lib/stores/agent-selection-store';
+import { useRealtimeYouTubeAccounts } from '@/hooks/use-realtime-youtube-accounts';
 
 interface YouTubeChannel {
   id: string;
@@ -62,6 +64,8 @@ export function YouTubeToolView({
 }: ToolViewProps) {
   const [copiedId, setCopiedId] = React.useState<string | null>(null);
   const [liveRefresh, setLiveRefresh] = React.useState(0);
+  const { selectedAgentId } = useAgentSelection();
+  const { enabledAccounts: rtEnabled, refreshCount: rtRefresh } = useRealtimeYouTubeAccounts(selectedAgentId || 'suna-default');
   
   // Add real-time refresh capability
   React.useEffect(() => {
@@ -253,7 +257,18 @@ export function YouTubeToolView({
     channels = [];
   }
 
-  const hasChannels = channels.length > 0;
+  // Prefer realtime enabled channels for the selected agent
+  const realtimeChannels: YouTubeChannel[] = rtEnabled.map((a: any) => ({
+    id: a.account_id,
+    name: a.account_name,
+    username: a.username,
+    profile_picture: a.profile_picture,
+    subscriber_count: a.subscriber_count,
+    view_count: a.view_count,
+    video_count: a.video_count,
+  }));
+  const effectiveChannels = realtimeChannels.length > 0 ? realtimeChannels : channels;
+  const hasChannels = effectiveChannels.length > 0;
 
   // Debug logging for development
   if (toolContent) {
@@ -332,7 +347,7 @@ export function YouTubeToolView({
               </Badge>
             )}
             <Badge variant="secondary">
-              {channels.length} {channels.length === 1 ? 'Channel' : 'Channels'}
+              {effectiveChannels.length} {effectiveChannels.length === 1 ? 'Channel' : 'Channels'}
             </Badge>
           </div>
         </div>
@@ -397,7 +412,7 @@ export function YouTubeToolView({
         ) : (
           <ScrollArea className="max-h-[500px]">
             <div className="space-y-4">
-              {channels.map((channel) => (
+              {effectiveChannels.map((channel) => (
                 <Card 
                   key={channel.id} 
                   className="overflow-hidden bg-card border border-border hover:bg-accent/5 transition-all duration-200"

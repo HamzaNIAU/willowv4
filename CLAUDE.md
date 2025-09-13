@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-Quick reference guide for Kortix platform development.
+Quick reference guide for Kortix (formerly Suna) platform development - an open-source AI agent platform with Agentpress framework.
 
 ## Project Overview
 
@@ -22,7 +22,8 @@ Quick reference guide for Kortix platform development.
 | **Backend** | `cd backend && uv sync` | Install dependencies |
 | | `uv run api.py` | Run API server |
 | | `uv run dramatiq --processes 4 --threads 4 run_agent_background` | Run worker |
-| | `uv run pytest` | Run tests |
+| | `uv run pytest` | Run all tests |
+| | `uv run pytest test_file.py::test_function` | Run single test |
 | | `uv run apply_migration.py` | Apply migrations |
 | | `uv run ruff check . && uv run ruff format .` | Lint/format |
 | **Frontend** | `cd frontend && npm install` | Install dependencies |
@@ -280,7 +281,24 @@ This ensures your backend changes are properly reflected in the running containe
 - Universal social media upload with smart detection
 - Reference ID system for file management across all platforms
 - Agent UUID validation prevents 404s
-- Python SDK for external integrations
+- Python SDK for external integrations (`sdk/kortix/`)
 - Custom agents temporarily disabled (Suna only)
 - Expanded social media support (Twitter, Instagram, Pinterest, LinkedIn)
 - Unified account management system
+
+## Common Troubleshooting
+
+### Backend Issues
+- **Redis connection errors**: Ensure Redis is running on port 6380 (external) / 6379 (internal)
+- **Migration failures**: Check Supabase connection and run `uv run apply_migration.py`
+- **Worker not processing**: Restart with proper flags: `uv run dramatiq --processes 4 --threads 4 run_agent_background`
+
+### Frontend Issues
+- **Build errors**: Clear `.next` folder and run `npm run build` again
+- **Type errors**: Run `npm run lint` to identify TypeScript issues
+- **API connection**: Verify `NEXT_PUBLIC_BACKEND_URL` in `.env.local`
+
+### Docker Issues
+- **Container changes not reflecting**: Rebuild with `docker compose build --no-cache backend`
+- **Service health**: Check logs with `docker compose logs -f [service-name]`
+- **Port conflicts**: Ensure ports 3000, 8000, 6380 are available

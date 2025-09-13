@@ -218,10 +218,9 @@ class YouTubeOAuthHandler:
             "is_active": True,
         }
         
-        # Use unified integration service (Postiz style - same as Pinterest!)
-        from services.integration_service import IntegrationService
-        
-        integration_service = IntegrationService(self.db)
+        # Use universal integrations service (Postiz-style)
+        from services.unified_integration_service import UnifiedIntegrationService
+        integration_service = UnifiedIntegrationService(self.db)
         
         # Calculate expires_in for Postiz pattern
         expires_in = int((expires_at - datetime.now(timezone.utc)).total_seconds()) if expires_at else None
@@ -244,18 +243,20 @@ class YouTubeOAuthHandler:
             }
         }
         
-        # Save using universal integration service (same method Pinterest uses!)
-        integration_id = await integration_service.create_or_update_integration(
+        # Save using universal integrations table
+        integration_id = await integration_service.save_integration(
             user_id=user_id,
-            name=channel_info["name"],
-            picture=channel_info.get("profile_picture"),
-            provider="youtube",  # Platform identifier
+            platform="youtube",
             platform_account_id=channel_info["id"],
+            account_data={
+                "name": channel_info["name"],
+                "picture": channel_info.get("profile_picture"),
+                "platform_data": platform_data
+            },
             access_token=access_token,
             refresh_token=refresh_token,
-            expires_in=expires_in,
-            username=channel_info.get("username"),
-            platform_data=platform_data
+            token_expires_at=expires_at,
+            token_scopes=self.SCOPES
         )
         
         logger.info(f"✅ Saved YouTube integration {integration_id} for user {user_id}")
@@ -268,6 +269,23 @@ class YouTubeOAuthHandler:
         except Exception as e:
             logger.warning(f"Failed to invalidate cache after channel connection: {e}")
         
+        # Create agent_integrations for all user's agents (including suna-default)
+        try:
+            client = await self.db.client
+            agents_result = await client.table("agents").select("agent_id").eq("account_id", user_id).execute()
+            agent_ids = [a["agent_id"] for a in (agents_result.data or [])]
+            if "suna-default" not in agent_ids:
+                agent_ids.append("suna-default")
+            for agent_id in agent_ids:
+                await integration_service.create_agent_integration(
+                    agent_id=agent_id,
+                    user_id=user_id,
+                    integration_id=integration_id,
+                    enabled=True
+                )
+        except Exception as e:
+            logger.warning(f"Failed to create agent_integrations for YouTube: {e}")
+
         return channel_info["id"]
     
     async def _create_channel_toggles(self, user_id: str, channel_id: str):
@@ -314,24 +332,22 @@ class YouTubeOAuthHandler:
     async def get_valid_token(self, user_id: str, channel_id: str) -> str:
         """Get a valid access token, refreshing if necessary"""
         client = await self.db.client
-        
-        # Get channel from database
-        result = await client.table("youtube_channels").select("*").eq(
+        # Read from integrations table
+        integ_result = await client.table("integrations").select("*").eq(
             "user_id", user_id
-        ).eq("id", channel_id).execute()
-        
-        if not result.data:
-            raise Exception(f"YouTube channel {channel_id} not found")
-        
-        channel = result.data[0]
-        
+        ).eq("platform", "youtube").eq("platform_account_id", channel_id).single().execute()
+
+        if not integ_result.data:
+            raise Exception(f"YouTube integration for {channel_id} not found")
+
+        integration = integ_result.data
         # Decrypt tokens
-        access_token = self.decrypt_token(channel["access_token"])
-        refresh_token = self.decrypt_token(channel["refresh_token"]) if channel.get("refresh_token") else None
+        access_token = self.decrypt_token(integration.get("access_token")) if integration.get("access_token") else None
+        refresh_token = self.decrypt_token(integration.get("refresh_token")) if integration.get("refresh_token") else None
         
         # SMART MORPHIC-INSPIRED TOKEN MANAGEMENT
         # Parse token expiry time with robust timezone handling
-        token_expires = channel["token_expires_at"]
+        token_expires = integration.get("token_expires_at")
         if token_expires.endswith('Z'):
             token_expires = token_expires.replace('Z', '+00:00')
         elif '+' not in token_expires and '-' not in token_expires[-6:]:
@@ -347,18 +363,18 @@ class YouTubeOAuthHandler:
         
         # SMART DECISION: Token still has >5 minutes? Use it!
         if expires_at > buffer_time:
-            logger.debug(f"✅ Token Valid: {time_until_expiry} remaining for channel {channel['name']}")
+            logger.debug(f"✅ Token Valid: {time_until_expiry} remaining for integration {channel_id}")
             return access_token
         
         # FULLY AUTOMATIC REFRESH: Zero manual intervention required
         if not refresh_token:
-            logger.warning(f"⚠️ No refresh token available for {channel['name']} - using fallback token strategy")
+            logger.warning(f"⚠️ No refresh token available for integration {channel_id} - using fallback token strategy")
             
             # AUTOMATIC FALLBACK: Try to use existing token anyway (might still work)
-            logger.info(f"🤖 AUTOMATIC FALLBACK: Attempting upload with existing token for {channel['name']}")
+            logger.info(f"🤖 AUTOMATIC FALLBACK: Attempting upload with existing token for integration {channel_id}")
             return access_token  # Let upload attempt proceed, might still work
         
-        logger.info(f"🤖 FULLY AUTOMATIC REFRESH: Silently refreshing token for {channel['name']} (expires in {time_until_expiry})")
+        logger.info(f"🤖 FULLY AUTOMATIC REFRESH: Silently refreshing token for integration {channel_id} (expires in {time_until_expiry})")
         
         try:
             # SILENT AUTOMATIC REFRESH: No user interaction required
@@ -366,18 +382,15 @@ class YouTubeOAuthHandler:
             
             # Update database with fresh token
             encrypted_access = self.encrypt_token(new_access_token)
-            
-            await client.table("youtube_channels").update({
+            await client.table("integrations").update({
                 "access_token": encrypted_access,
                 "token_expires_at": new_expires_at.isoformat(),
                 "updated_at": datetime.now(timezone.utc).isoformat(),
-                "last_refresh_success": datetime.now(timezone.utc).isoformat(),
-                "needs_reauth": False,  # Clear re-auth flags
-                "refresh_failure_count": 0  # Reset failure count
-            }).eq("id", channel_id).eq("user_id", user_id).execute()
+                "refresh_needed": False
+            }).eq("user_id", user_id).eq("platform", "youtube").eq("platform_account_id", channel_id).execute()
             
             new_time_until_expiry = new_expires_at - datetime.now(timezone.utc)
-            logger.info(f"🎉 SILENT REFRESH SUCCESS: {channel['name']} token automatically renewed! New expiry: {new_expires_at}")
+            logger.info(f"🎉 SILENT REFRESH SUCCESS: integration {channel_id} token automatically renewed! New expiry: {new_expires_at}")
             
             return new_access_token
             
@@ -385,38 +398,34 @@ class YouTubeOAuthHandler:
             logger.warning(f"⚠️ AUTOMATIC REFRESH ATTEMPT FAILED for {channel['name']}: {refresh_error}")
             
             # GRACEFUL DEGRADATION: Don't throw errors, try to continue with existing token
-            await client.table("youtube_channels").update({
+            await client.table("integrations").update({
                 "last_refresh_error": str(refresh_error),
                 "last_refresh_attempt": datetime.now(timezone.utc).isoformat(),
-                "refresh_failure_count": client.table("youtube_channels").select("refresh_failure_count").eq("id", channel_id).execute().data[0].get("refresh_failure_count", 0) + 1,
                 "updated_at": datetime.now(timezone.utc).isoformat(),
-                # Keep channel active and try existing token
-            }).eq("id", channel_id).eq("user_id", user_id).execute()
+            }).eq("user_id", user_id).eq("platform", "youtube").eq("platform_account_id", channel_id).execute()
             
             # AUTOMATIC FALLBACK: Try existing token anyway (might still work for a bit)
-            logger.info(f"🤖 AUTOMATIC FALLBACK: Using existing token for {channel['name']} despite refresh failure")
+            logger.info(f"🤖 AUTOMATIC FALLBACK: Using existing token for integration {channel_id} despite refresh failure")
             return access_token  # Let upload proceed - might work anyway
     
     async def get_user_channels(self, user_id: str) -> list:
-        """Get all YouTube channels for a user"""
+        """Get all YouTube channels for a user from integrations."""
         client = await self.db.client
-        
-        result = await client.table("youtube_channels").select("*").eq(
+        result = await client.table("integrations").select("*").eq(
             "user_id", user_id
-        ).eq("is_active", True).execute()
-        
+        ).eq("platform", "youtube").eq("disabled", False).execute()
         channels = []
-        for channel in result.data:
+        for integ in result.data or []:
+            pdata = json.loads(integ.get("platform_data") or '{}') if isinstance(integ.get("platform_data"), str) else (integ.get("platform_data") or {})
             channels.append({
-                "id": channel["id"],
-                "name": channel["name"],
-                "username": channel.get("username"),
-                "profile_picture": channel.get("profile_picture"),
-                "subscriber_count": channel.get("subscriber_count", 0),
-                "video_count": channel.get("video_count", 0),
-                "view_count": channel.get("view_count", 0),
+                "id": integ["platform_account_id"],
+                "name": integ["name"],
+                "username": pdata.get("username"),
+                "profile_picture": integ.get("picture"),
+                "subscriber_count": pdata.get("subscriber_count", 0),
+                "video_count": pdata.get("video_count", 0),
+                "view_count": pdata.get("view_count", 0),
             })
-        
         return channels
     
     async def remove_channel(self, user_id: str, channel_id: str) -> bool:
@@ -426,15 +435,17 @@ class YouTubeOAuthHandler:
         # First, clean up MCP toggles for this channel
         await self._cleanup_channel_toggles(user_id, channel_id)
         
-        # Then remove the channel
-        result = await client.table("youtube_channels").delete().eq(
-            "user_id", user_id
-        ).eq("id", channel_id).execute()
-        
-        success = bool(result.data)
+        # Then disable the integration
+        from services.unified_integration_service import UnifiedIntegrationService
+        integration_service = UnifiedIntegrationService(self.db)
+        integrations = await integration_service.get_user_integrations(user_id, platform="youtube")
+        target = next((i for i in integrations if i.get("platform_account_id") == channel_id), None)
+        success = False
+        if target:
+            success = await integration_service.remove_integration(user_id, target["id"])
         
         if success:
-            logger.info(f"Removed YouTube channel {channel_id} for user {user_id}")
+            logger.info(f"Removed YouTube integration {channel_id} for user {user_id}")
             
             # Invalidate cache to reflect the removed channel
             try:

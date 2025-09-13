@@ -101,12 +101,18 @@ class ToolManager:
         logger.info(f"🔧 Tool registration complete. Total tools: {len(registered_tools)}")
         logger.info(f"🔧 Registered tools: {registered_tools}")
         
-        # Specifically check for YouTube tools
-        youtube_tools = [tool for tool in registered_tools if 'youtube' in tool.lower()]
-        if youtube_tools:
-            logger.info(f"✅ YouTube tools registered: {youtube_tools}")
-        else:
-            logger.warning("⚠️  No YouTube tools found in registry")
+        # Specifically check for social media tool registration visibility
+        def _log_platform(name: str):
+            matched = [t for t in registered_tools if name in t.lower()]
+            if matched:
+                logger.info(f"✅ {name.capitalize()} tools registered: {matched}")
+            else:
+                logger.warning(f"⚠️ No {name.capitalize()} tools found in registry")
+
+        for platform in [
+            'youtube', 'twitter', 'instagram', 'pinterest', 'linkedin', 'tiktok'
+        ]:
+            _log_platform(platform)
         
         # Return YouTube channels for use in system prompt
         return getattr(self, 'youtube_channels', [])
@@ -170,80 +176,38 @@ class ToolManager:
                 else:
                     logger.info(f"⚠️ Pre-computed channels list is empty in agent config for agent {self.agent_id}")
             else:
-                # Fallback to database fetch (legacy behavior)
-                logger.warning(f"No pre-computed YouTube channels found in agent config, falling back to database fetch")
+                # Universal system: fetch YouTube integrations and precompute metadata
+                logger.info("Using universal integrations to precompute YouTube channels for tool registration")
                 from services.supabase import DBConnection
-                from youtube_mcp.channels import YouTubeChannelService
-                from services.mcp_toggles import MCPToggleService
+                from services.unified_integration_service import UnifiedIntegrationService
                 db = DBConnection()
-                
+
                 try:
+                    integration_service = UnifiedIntegrationService(db)
                     if self.user_id and self.agent_id:
-                        channel_service = YouTubeChannelService(db)
-                        toggle_service = MCPToggleService(db)
-                        
-                        # Get all connected channels first
-                        all_channels = await channel_service.get_user_channels(self.user_id)
-                        
-                        # Filter to only enabled channels via MCP toggles
-                        enabled_channels = []
-                        for channel in all_channels:
-                            mcp_id = f"social.youtube.{channel['id']}"
-                            is_enabled = await toggle_service.is_enabled(self.agent_id, self.user_id, mcp_id)
-                            if is_enabled:
-                                enabled_channels.append(channel)
-                                logger.info(f"YouTube channel {channel['name']} ({channel['id']}) is enabled (fallback)")
-                            else:
-                                logger.info(f"YouTube channel {channel['name']} ({channel['id']}) is disabled (fallback)")
-                        
-                        channel_ids = [channel['id'] for channel in enabled_channels]
-                        channel_metadata = enabled_channels
-                        
-                        if channel_ids:
-                            logger.info(f"Loaded {len(channel_ids)} enabled YouTube channels from database fallback")
-                        else:
-                            logger.info(f"No YouTube channels are enabled for agent {self.agent_id} (fallback)")
+                        integrations = await integration_service.get_agent_integrations(self.agent_id, self.user_id, platform="youtube")
                     elif self.user_id:
-                        # No agent_id, but still need to filter by toggle state
-                        # Use a default agent_id or skip toggle filtering for now
-                        logger.warning(f"No agent_id provided for user {self.user_id} - toggle filtering may not work properly")
-                        channel_service = YouTubeChannelService(db)
-                        channels = await channel_service.get_user_channels(self.user_id)
-                        
-                        # If we have agent_config from cache, try to get agent_id from it
-                        fallback_agent_id = None
-                        if self.agent_config and 'agent_id' in self.agent_config:
-                            fallback_agent_id = self.agent_config['agent_id']
-                            logger.info(f"Found agent_id in agent_config for toggle filtering: {fallback_agent_id}")
-                        
-                        if fallback_agent_id:
-                            # Apply toggle filtering with discovered agent_id
-                            toggle_service = MCPToggleService(db)
-                            enabled_channels = []
-                            for channel in channels:
-                                mcp_id = f"social.youtube.{channel['id']}"
-                                is_enabled = await toggle_service.is_enabled(fallback_agent_id, self.user_id, mcp_id)
-                                if is_enabled:
-                                    enabled_channels.append(channel)
-                                    logger.info(f"YouTube channel {channel['name']} ({channel['id']}) is enabled (fallback with discovered agent_id)")
-                                else:
-                                    logger.info(f"YouTube channel {channel['name']} ({channel['id']}) is disabled (fallback with discovered agent_id)")
-                            
-                            channel_ids = [channel['id'] for channel in enabled_channels]
-                            channel_metadata = enabled_channels
-                            if channel_ids:
-                                logger.info(f"Loaded {len(channel_ids)} enabled YouTube channels for user {self.user_id} (fallback with toggle filtering)")
-                            else:
-                                logger.info(f"No YouTube channels are enabled for user {self.user_id} (fallback with toggle filtering)")
-                        else:
-                            # No agent_id available - load all channels (legacy behavior)
-                            logger.warning(f"No agent_id available for toggle filtering - loading all channels for user {self.user_id}")
-                            channel_ids = [channel['id'] for channel in channels]
-                            channel_metadata = channels
-                            if channel_ids:
-                                logger.info(f"Loaded {len(channel_ids)} YouTube channels for user {self.user_id} (no agent filtering, legacy fallback)")
+                        integrations = await integration_service.get_user_integrations(self.user_id, platform="youtube")
+                    else:
+                        integrations = []
+
+                    # Map to channel-like metadata the tool expects
+                    channel_metadata = []
+                    for integ in integrations:
+                        pdata = integ.get('platform_data', {})
+                        channel_metadata.append({
+                            'id': integ['platform_account_id'],
+                            'name': integ.get('cached_name') or integ['name'],
+                            'username': pdata.get('username'),
+                            'profile_picture': integ.get('cached_picture') or integ.get('picture'),
+                            'subscriber_count': pdata.get('subscriber_count', 0),
+                            'view_count': pdata.get('view_count', 0),
+                            'video_count': pdata.get('video_count', 0),
+                        })
+                    channel_ids = [c['id'] for c in channel_metadata]
+                    logger.info(f"Loaded {len(channel_ids)} YouTube channels from universal integrations")
                 except Exception as e:
-                    logger.warning(f"Could not load YouTube channels from database fallback: {e}")
+                    logger.warning(f"Could not load YouTube channels from universal integrations: {e}")
             
             # Ensure db is available for YouTubeTool (create if not already created)
             if db is None:
@@ -447,43 +411,41 @@ class ToolManager:
                 account_ids = [account['id'] for account in account_metadata]
                 logger.info(f"Using pre-computed Pinterest accounts from agent config: {len(account_ids)} accounts")
             else:
-                # Fallback: Query unified social accounts directly
-                logger.info(f"No pre-computed Pinterest accounts, querying unified social accounts for agent {self.agent_id}")
-                try:
+                # Fallback: Query unified social accounts directly (skip for virtual default agent)
+                if self.agent_id == 'suna-default':
+                    logger.info("Skipping unified Pinterest account query for virtual agent 'suna-default'")
+                else:
+                    logger.info(f"No pre-computed Pinterest accounts, querying unified social accounts for agent {self.agent_id}")
                     from services.supabase import DBConnection
                     db = DBConnection()
-                    client = await db.client
-                    
-                    # Query unified social accounts for enabled Pinterest accounts
-                    result = await client.table("agent_social_accounts").select("*").eq(
-                        "agent_id", self.agent_id
-                    ).eq("user_id", self.user_id).eq(
-                        "platform", "pinterest"
-                    ).eq("enabled", True).execute()
-                    
-                    enabled_accounts = []
-                    for account in result.data:
-                        enabled_accounts.append({
-                            "id": account["account_id"],
-                            "name": account["account_name"],
-                            "username": account["username"],
-                            "profile_picture": account["profile_picture"],
-                            "subscriber_count": account["subscriber_count"],
-                            "view_count": account["view_count"],
-                            "video_count": account["video_count"],
-                            "country": account["country"]
-                        })
-                    
-                    account_ids = [account['id'] for account in enabled_accounts]
-                    account_metadata = enabled_accounts
-                    
-                    if account_ids:
-                        logger.info(f"Loaded {len(account_ids)} enabled Pinterest accounts from unified system")
-                    else:
-                        logger.info(f"No Pinterest accounts are enabled for agent {self.agent_id}")
-                        
-                except Exception as e:
-                    logger.warning(f"Could not load Pinterest accounts from unified system: {e}")
+                    try:
+                        client = await db.client
+                        # Query unified social accounts for enabled Pinterest accounts
+                        result = await client.table("agent_social_accounts").select("*").eq(
+                            "agent_id", self.agent_id
+                        ).eq("user_id", self.user_id).eq(
+                            "platform", "pinterest"
+                        ).eq("enabled", True).execute()
+                        enabled_accounts = []
+                        for account in result.data:
+                            enabled_accounts.append({
+                                "id": account["account_id"],
+                                "name": account["account_name"],
+                                "username": account["username"],
+                                "profile_picture": account["profile_picture"],
+                                "subscriber_count": account["subscriber_count"],
+                                "view_count": account["view_count"],
+                                "video_count": account["video_count"],
+                                "country": account["country"]
+                            })
+                        account_ids = [account['id'] for account in enabled_accounts]
+                        account_metadata = enabled_accounts
+                        if account_ids:
+                            logger.info(f"Loaded {len(account_ids)} enabled Pinterest accounts from unified system")
+                        else:
+                            logger.info(f"No Pinterest accounts are enabled for agent {self.agent_id}")
+                    except Exception as e:
+                        logger.warning(f"Could not load Pinterest accounts from unified system: {e}")
             
             # Ensure db is available for PinterestTool
             if db is None:
@@ -519,209 +481,137 @@ class ToolManager:
             )
             logger.info(f"✅ Successfully registered Complete Pinterest MCP Tool with {len(account_ids)} accounts")
         
-        # Register LinkedIn tool if not disabled
+        # Register LinkedIn tool if not disabled (fail-safe)
         if 'linkedin_tool' not in disabled_tools:
-            from agent.tools.linkedin_complete_mcp_tool import LinkedInTool
-            
-            # Use pre-computed LinkedIn accounts from agent config or fallback to database
-            account_ids = []
-            account_metadata = []
-            db = None
-            
-            # Check if we have pre-computed accounts from agent config
-            logger.debug(f"Checking for pre-computed LinkedIn accounts - agent_config exists: {self.agent_config is not None}, agent_id: {self.agent_id}")
-            if self.agent_config and 'linkedin_accounts' in self.agent_config:
-                account_metadata = self.agent_config['linkedin_accounts']
-                account_ids = [account['id'] for account in account_metadata]
-                if account_ids:
-                    logger.info(f"✅ Using pre-computed LinkedIn accounts from agent config: {len(account_ids)} accounts for agent {self.agent_id}")
+            try:
+                # Import inside the block so failures don't affect the whole function
+                from agent.tools.linkedin_complete_mcp_tool import LinkedInTool
+
+                # Use pre-computed LinkedIn accounts from agent config or fallback to database
+                account_ids = []
+                account_metadata = []
+                db = None
+
+                # Check if we have pre-computed accounts from agent config
+                logger.debug(f"Checking for pre-computed LinkedIn accounts - agent_config exists: {self.agent_config is not None}, agent_id: {self.agent_id}")
+                if self.agent_config and 'linkedin_accounts' in self.agent_config:
+                    account_metadata = self.agent_config['linkedin_accounts']
+                    account_ids = [account['id'] for account in account_metadata]
+                    if account_ids:
+                        logger.info(f"✅ Using pre-computed LinkedIn accounts from agent config: {len(account_ids)} accounts for agent {self.agent_id}")
+                    else:
+                        logger.info(f"⚠️ Pre-computed LinkedIn accounts list is empty in agent config for agent {self.agent_id}")
                 else:
-                    logger.info(f"⚠️ Pre-computed LinkedIn accounts list is empty in agent config for agent {self.agent_id}")
-            else:
-                # Fallback to database fetch
-                logger.warning(f"No pre-computed LinkedIn accounts found in agent config, falling back to database fetch")
-                from services.supabase import DBConnection
-                from linkedin_mcp.accounts import LinkedInAccountService
-                db = DBConnection()
-                
-                try:
-                    if self.user_id and self.agent_id:
-                        account_service = LinkedInAccountService(db)
-                        enabled_accounts = await account_service.get_accounts_for_agent(self.user_id, self.agent_id)
-                        account_ids = [account['id'] for account in enabled_accounts]
-                        account_metadata = enabled_accounts
-                        if account_ids:
-                            logger.info(f"Loaded {len(account_ids)} enabled LinkedIn accounts from database fallback")
-                        else:
-                            logger.info(f"No LinkedIn accounts are enabled for agent {self.agent_id} (fallback)")
-                except Exception as e:
-                    logger.warning(f"Could not load LinkedIn accounts from database fallback: {e}")
-            
-            # Create JWT token for LinkedIn tool API calls
-            jwt_secret = os.getenv("SUPABASE_JWT_SECRET", "")
-            jwt_token = None
-            if jwt_secret and self.user_id:
-                payload = {
-                    "sub": self.user_id,
-                    "user_id": self.user_id,
-                    "role": "authenticated"
-                }
-                jwt_token = jwt.encode(payload, jwt_secret, algorithm="HS256")
-            
-            # Register complete LinkedIn MCP tool
-            logger.info(f"💼 Registering Complete LinkedIn MCP Tool for agent {self.agent_id}")
-            self.thread_manager.add_tool(
-                LinkedInTool,
-                user_id=self.user_id or "",
-                account_ids=account_ids,
-                account_metadata=account_metadata,
-                jwt_token=jwt_token,
-                agent_id=self.agent_id,
-                thread_id=self.thread_id
-            )
-            logger.info(f"✅ Successfully registered Complete LinkedIn MCP Tool with {len(account_ids)} accounts")
+                    # Fallback to database fetch
+                    logger.warning(f"No pre-computed LinkedIn accounts found in agent config, falling back to database fetch")
+                    from services.supabase import DBConnection
+                    from linkedin_mcp.accounts import LinkedInAccountService
+                    db = DBConnection()
+
+                    try:
+                        if self.user_id and self.agent_id:
+                            account_service = LinkedInAccountService(db)
+                            enabled_accounts = await account_service.get_accounts_for_agent(self.user_id, self.agent_id)
+                            account_ids = [account['id'] for account in enabled_accounts]
+                            account_metadata = enabled_accounts
+                            if account_ids:
+                                logger.info(f"Loaded {len(account_ids)} enabled LinkedIn accounts from database fallback")
+                            else:
+                                logger.info(f"No LinkedIn accounts are enabled for agent {self.agent_id} (fallback)")
+                    except Exception as e:
+                        logger.warning(f"Could not load LinkedIn accounts from database fallback: {e}")
+
+                # Create JWT token for LinkedIn tool API calls
+                jwt_secret = os.getenv("SUPABASE_JWT_SECRET", "")
+                jwt_token = None
+                if jwt_secret and self.user_id:
+                    payload = {
+                        "sub": self.user_id,
+                        "user_id": self.user_id,
+                        "role": "authenticated"
+                    }
+                    jwt_token = jwt.encode(payload, jwt_secret, algorithm="HS256")
+
+                # Register complete LinkedIn MCP tool
+                logger.info(f"💼 Registering Complete LinkedIn MCP Tool for agent {self.agent_id}")
+                self.thread_manager.add_tool(
+                    LinkedInTool,
+                    user_id=self.user_id or "",
+                    account_ids=account_ids,
+                    account_metadata=account_metadata,
+                    jwt_token=jwt_token,
+                    agent_id=self.agent_id,
+                    thread_id=self.thread_id
+                )
+                logger.info(f"✅ Successfully registered Complete LinkedIn MCP Tool with {len(account_ids)} accounts")
+            except Exception as e:
+                logger.warning(f"Skipping LinkedIn tool registration due to error: {e}")
         
-        # Register Pinterest tool if not disabled
-        if 'pinterest_tool' not in disabled_tools:
-            from agent.tools.pinterest_complete_mcp_tool import PinterestTool
-            
-            # Use pre-computed Pinterest accounts from agent config or fallback to database
-            account_ids = []
-            account_metadata = []
-            db = None
-            
-            # Check if we have pre-computed accounts from agent config
-            logger.debug(f"Checking for pre-computed Pinterest accounts - agent_config exists: {self.agent_config is not None}, agent_id: {self.agent_id}")
-            if self.agent_config and 'pinterest_accounts' in self.agent_config:
-                account_metadata = self.agent_config['pinterest_accounts']
-                account_ids = [account['id'] for account in account_metadata]
-                if account_ids:
-                    logger.info(f"✅ Using pre-computed Pinterest accounts from agent config: {len(account_ids)} accounts for agent {self.agent_id}")
-                else:
-                    logger.info(f"⚠️ Pre-computed Pinterest accounts list is empty in agent config for agent {self.agent_id}")
-            else:
-                # Fallback to database fetch
-                logger.warning(f"No pre-computed Pinterest accounts found in agent config, falling back to database fetch")
-                from services.supabase import DBConnection
-                from services.social_media_service import UnifiedSocialMediaService
-                db = DBConnection()
-                
-                try:
-                    if self.user_id and self.agent_id:
-                        # Use unified social media service for Pinterest accounts
-                        social_service = UnifiedSocialMediaService(db)
-                        accounts = await social_service.get_accounts(self.user_id, platform="pinterest")
-                        
-                        # Filter for enabled accounts using agent_social_accounts table
-                        client = await db.client
-                        result = await client.table("agent_social_accounts").select("account_id").eq(
-                            "agent_id", self.agent_id
-                        ).eq("user_id", self.user_id).eq(
-                            "platform", "pinterest"
-                        ).eq("enabled", True).execute()
-                        
-                        enabled_account_ids = {row["account_id"] for row in result.data}
-                        enabled_accounts = [
-                            acc for acc in accounts 
-                            if acc["platform_account_id"] in enabled_account_ids
-                        ]
-                        
-                        # Format accounts for the tool
-                        account_metadata = await social_service.format_for_platform("pinterest", enabled_accounts)
-                        account_ids = [account['id'] for account in account_metadata]
-                        
-                        if account_ids:
-                            logger.info(f"Loaded {len(account_ids)} enabled Pinterest accounts from unified system (fallback)")
-                        else:
-                            logger.info(f"No Pinterest accounts are enabled for agent {self.agent_id} (fallback)")
-                except Exception as e:
-                    logger.warning(f"Could not load Pinterest accounts from database fallback: {e}")
-            
-            # Create JWT token for Pinterest tool API calls
-            jwt_secret = os.getenv("SUPABASE_JWT_SECRET", "")
-            jwt_token = None
-            if jwt_secret and self.user_id:
-                payload = {
-                    "sub": self.user_id,
-                    "user_id": self.user_id,
-                    "role": "authenticated"
-                }
-                jwt_token = jwt.encode(payload, jwt_secret, algorithm="HS256")
-            
-            # Register complete Pinterest MCP tool
-            logger.info(f"📌 Registering Complete Pinterest MCP Tool for agent {self.agent_id}")
-            self.thread_manager.add_tool(
-                PinterestTool,
-                user_id=self.user_id or "",
-                account_ids=account_ids,
-                account_metadata=account_metadata,
-                jwt_token=jwt_token,
-                agent_id=self.agent_id,
-                thread_id=self.thread_id
-            )
-            logger.info(f"✅ Successfully registered Complete Pinterest MCP Tool with {len(account_ids)} accounts")
+        # (Deduped) Pinterest tool registration handled earlier above.
         
-        # Register TikTok tool if not disabled
+        # Register TikTok tool if not disabled (fail-safe)
         if 'tiktok_tool' not in disabled_tools:
-            from agent.tools.tiktok_complete_mcp_tool import TikTokTool
-            
-            # Use pre-computed TikTok accounts from agent config or fallback to database
-            account_ids = []
-            account_metadata = []
-            db = None
-            
-            # Check if we have pre-computed accounts from agent config
-            logger.debug(f"Checking for pre-computed TikTok accounts - agent_config exists: {self.agent_config is not None}, agent_id: {self.agent_id}")
-            if self.agent_config and 'tiktok_accounts' in self.agent_config:
-                account_metadata = self.agent_config['tiktok_accounts']
-                account_ids = [account['id'] for account in account_metadata]
-                if account_ids:
-                    logger.info(f"✅ Using pre-computed TikTok accounts from agent config: {len(account_ids)} accounts for agent {self.agent_id}")
-                else:
-                    logger.info(f"⚠️ Pre-computed TikTok accounts list is empty in agent config for agent {self.agent_id}")
-            else:
-                # Fallback to database fetch
-                logger.warning(f"No pre-computed TikTok accounts found in agent config, falling back to database fetch")
-                from services.supabase import DBConnection
-                from tiktok_mcp.accounts import TikTokAccountService
-                db = DBConnection()
+            try:
+                from agent.tools.tiktok_complete_mcp_tool import TikTokTool
                 
-                try:
-                    if self.user_id and self.agent_id:
-                        account_service = TikTokAccountService(db)
-                        enabled_accounts = await account_service.get_accounts_for_agent(self.user_id, self.agent_id)
-                        account_ids = [account['id'] for account in enabled_accounts]
-                        account_metadata = enabled_accounts
-                        if account_ids:
-                            logger.info(f"Loaded {len(account_ids)} enabled TikTok accounts from database fallback")
-                        else:
-                            logger.info(f"No TikTok accounts are enabled for agent {self.agent_id} (fallback)")
-                except Exception as e:
-                    logger.warning(f"Could not load TikTok accounts from database fallback: {e}")
-            
-            # Create JWT token for TikTok tool API calls
-            jwt_secret = os.getenv("SUPABASE_JWT_SECRET", "")
-            jwt_token = None
-            if jwt_secret and self.user_id:
-                payload = {
-                    "sub": self.user_id,
-                    "user_id": self.user_id,
-                    "role": "authenticated"
-                }
-                jwt_token = jwt.encode(payload, jwt_secret, algorithm="HS256")
-            
-            # Register complete TikTok MCP tool
-            logger.info(f"🎵 Registering Complete TikTok MCP Tool for agent {self.agent_id}")
-            self.thread_manager.add_tool(
-                TikTokTool,
-                user_id=self.user_id or "",
-                account_ids=account_ids,
-                account_metadata=account_metadata,
-                jwt_token=jwt_token,
-                agent_id=self.agent_id,
-                thread_id=self.thread_id
-            )
-            logger.info(f"✅ Successfully registered Complete TikTok MCP Tool with {len(account_ids)} accounts")
+                # Use pre-computed TikTok accounts from agent config or fallback to database
+                account_ids = []
+                account_metadata = []
+                db = None
+                
+                logger.debug(f"Checking for pre-computed TikTok accounts - agent_config exists: {self.agent_config is not None}, agent_id: {self.agent_id}")
+                if self.agent_config and 'tiktok_accounts' in self.agent_config:
+                    account_metadata = self.agent_config['tiktok_accounts']
+                    account_ids = [account['id'] for account in account_metadata]
+                    if account_ids:
+                        logger.info(f"✅ Using pre-computed TikTok accounts from agent config: {len(account_ids)} accounts for agent {self.agent_id}")
+                    else:
+                        logger.info(f"⚠️ Pre-computed TikTok accounts list is empty in agent config for agent {self.agent_id}")
+                else:
+                    # Fallback to database fetch
+                    logger.warning(f"No pre-computed TikTok accounts found in agent config, falling back to database fetch")
+                    from services.supabase import DBConnection
+                    from tiktok_mcp.accounts import TikTokAccountService
+                    db = DBConnection()
+                    
+                    try:
+                        if self.user_id and self.agent_id:
+                            account_service = TikTokAccountService(db)
+                            enabled_accounts = await account_service.get_accounts_for_agent(self.user_id, self.agent_id)
+                            account_ids = [account['id'] for account in enabled_accounts]
+                            account_metadata = enabled_accounts
+                            if account_ids:
+                                logger.info(f"Loaded {len(account_ids)} enabled TikTok accounts from database fallback")
+                            else:
+                                logger.info(f"No TikTok accounts are enabled for agent {self.agent_id} (fallback)")
+                    except Exception as e:
+                        logger.warning(f"Could not load TikTok accounts from database fallback: {e}")
+                
+                # Create JWT token for TikTok tool API calls
+                jwt_secret = os.getenv("SUPABASE_JWT_SECRET", "")
+                jwt_token = None
+                if jwt_secret and self.user_id:
+                    payload = {
+                        "sub": self.user_id,
+                        "user_id": self.user_id,
+                        "role": "authenticated"
+                    }
+                    jwt_token = jwt.encode(payload, jwt_secret, algorithm="HS256")
+                
+                # Register complete TikTok MCP tool
+                logger.info(f"🎵 Registering Complete TikTok MCP Tool for agent {self.agent_id}")
+                self.thread_manager.add_tool(
+                    TikTokTool,
+                    user_id=self.user_id or "",
+                    account_ids=account_ids,
+                    account_metadata=account_metadata,
+                    jwt_token=jwt_token,
+                    agent_id=self.agent_id,
+                    thread_id=self.thread_id
+                )
+                logger.info(f"✅ Successfully registered Complete TikTok MCP Tool with {len(account_ids)} accounts")
+            except Exception as e:
+                logger.warning(f"Skipping TikTok tool registration due to error: {e}")
     
     def _register_agent_builder_tools(self, agent_id: str, disabled_tools: List[str]):
         """Register agent builder tools."""

@@ -53,113 +53,48 @@ class YouTubeTool(Tool):
         return jwt.encode(payload, jwt_secret, algorithm="HS256")
     
     async def _check_enabled_channels(self) -> tuple[bool, List[Dict[str, Any]], str]:
-        """REAL-TIME: Direct database query - NO CACHE DEPENDENCIES"""
+        """Query the universal integrations system for enabled YouTube channels."""
         try:
-            logger.info(f"🔴 REAL-TIME: Querying database directly for agent {self.agent_id}")
-            
-            # REAL-TIME: Direct database access instead of HTTP/cache  
             from services.supabase import DBConnection
+            from services.unified_integration_service import UnifiedIntegrationService
             db = DBConnection()
-            client = await db.client
-            
-            # Special handling for suna-default virtual agent
+            integration_service = UnifiedIntegrationService(db)
+
+            # For the virtual agent, show all user integrations for YouTube
             if self.agent_id == "suna-default":
-                logger.info(f"[YouTube MCP] Using agent_social_accounts for suna-default agent (respects MCP toggles)")
-                # Query agent_social_accounts to respect MCP toggle state for suna-default
-                result = await client.table("agent_social_accounts").select("""
-                    account_id, account_name, enabled,
-                    youtube_channels!inner(id, name, username, profile_picture, subscriber_count, view_count, video_count)
-                """).eq("agent_id", "suna-default").eq(
-                    "user_id", self.user_id
-                ).eq("platform", "youtube").eq("enabled", True).execute()
-                
-                if result.data:
-                    channels = []
-                    for account in result.data:
-                        ch_data = account["youtube_channels"]
-                        channels.append({
-                            "id": ch_data["id"],
-                            "name": ch_data["name"],
-                            "username": ch_data.get("username", ""),
-                            "profile_picture": ch_data.get("profile_picture"),
-                            "subscriber_count": ch_data.get("subscriber_count", 0),
-                            "view_count": ch_data.get("view_count", 0),
-                            "video_count": ch_data.get("video_count", 0)
-                        })
-                    logger.info(f"✅ Found {len(channels)} ENABLED YouTube channels for suna-default (respecting MCP toggles)")
-                    for ch in channels:
-                        logger.info(f"  ✅ MCP Enabled: {ch['name']} ({ch['id']})")
-                    return True, channels, ""
-                else:
-                    logger.info(f"❌ No enabled YouTube channels found for suna-default (check MCP toggles)")
-                    error_msg = (
-                        "❌ **No YouTube channels enabled**\\n\\n"
-                        "Please enable YouTube channels in the Social Media dropdown"
-                    )
-                    return False, [], error_msg
-            
-            # Regular agent - query agent_social_accounts
-            result = await client.table("agent_social_accounts").select("*").eq(
-                "agent_id", self.agent_id
-            ).eq("user_id", self.user_id).eq(
-                "platform", "youtube"  
-            ).eq("enabled", True).execute()
-            
-            channels = []
-            for account in result.data:
-                channels.append({
-                    "id": account["account_id"],
-                    "name": account["account_name"],
-                    "username": account["username"],
-                    "profile_picture": account["profile_picture"],
-                    "subscriber_count": account["subscriber_count"],
-                    "view_count": account["view_count"],
-                    "video_count": account["video_count"],
-                    "country": account["country"]
-                })
-            
-            logger.info(f"🔴 REAL-TIME RESULT: Found {len(channels)} enabled YouTube accounts")
-            for ch in channels:
-                logger.info(f"  🔴 Live Enabled: {ch['name']} ({ch['id']})")
-            
-            if channels:
-                return True, channels, ""
+                integrations = await integration_service.get_user_integrations(self.user_id, platform="youtube")
             else:
-                # Fallback: Check youtube_channels table if no agent_social_accounts found
-                logger.info(f"[YouTube MCP] No channels in agent_social_accounts, checking youtube_channels table")
-                youtube_result = await client.table("youtube_channels").select("*").eq(
-                    "user_id", self.user_id
-                ).eq("is_active", True).execute()
-                
-                if youtube_result.data:
-                    # Found channels in youtube_channels table - use them
-                    fallback_channels = []
-                    for ch in youtube_result.data:
-                        fallback_channels.append({
-                            "id": ch["id"],
-                            "name": ch["name"],
-                            "username": ch.get("username", ch.get("custom_url", "")),
-                            "profile_picture": ch.get("profile_picture"),
-                            "subscriber_count": ch.get("subscriber_count", 0),
-                            "view_count": ch.get("view_count", 0),
-                            "video_count": ch.get("video_count", 0)
-                        })
-                    logger.info(f"✅ Found {len(fallback_channels)} YouTube channels in fallback table")
-                    return True, fallback_channels, ""
-                
-                # REAL-TIME: Check if we have any connected accounts at all
-                all_accounts_result = await client.table("agent_social_accounts").select("*").eq(
-                    "agent_id", self.agent_id
-                ).eq("user_id", self.user_id).eq("platform", "youtube").execute()
-                
-                if all_accounts_result.data:
-                    disabled_count = len(all_accounts_result.data)
-                    return False, [], f"❌ **{disabled_count} YouTube accounts connected but disabled**\\n\\nPlease enable at least one account in the MCP connections dropdown (⚙️ button)."
-                else:
-                    return False, [], "❌ **No YouTube accounts connected**\\n\\nPlease connect a YouTube account first using 'Add Account' in Social Media settings."
-                    
+                integrations = await integration_service.get_agent_integrations(self.agent_id, self.user_id, platform="youtube")
+
+            channels = []
+            for integ in integrations:
+                pdata = integ.get("platform_data", {})
+                channels.append({
+                    "id": integ["platform_account_id"],
+                    "name": integ.get("cached_name") or integ["name"],
+                    "username": pdata.get("username"),
+                    "profile_picture": integ.get("cached_picture") or integ.get("picture"),
+                    "subscriber_count": pdata.get("subscriber_count", 0),
+                    "view_count": pdata.get("view_count", 0),
+                    "video_count": pdata.get("video_count", 0),
+                    "country": pdata.get("country")
+                })
+
+            if channels:
+                logger.info(f"Universal integrations returned {len(channels)} enabled YouTube channels for agent {self.agent_id}")
+                return True, channels, ""
+
+            # No channels found
+            if self.agent_id == "suna-default":
+                return False, [], (
+                    "❌ **No YouTube accounts connected**\\n\\nPlease connect a YouTube account in Social Media settings."
+                )
+            else:
+                return False, [], (
+                    "❌ **No YouTube channels enabled**\\n\\nPlease enable at least one account in the MCP connections dropdown (⚙️ button)."
+                )
         except Exception as e:
-            logger.error(f"🔴 REAL-TIME ERROR: Failed to query database directly: {e}")
+            logger.error(f"Universal integrations query failed: {e}")
             return False, [], f"Error checking accounts: {str(e)}"
     
     @openapi_schema({

@@ -18,6 +18,8 @@ import { Button } from '@/components/ui/button';
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { LoadingState } from './shared/LoadingState';
 import { toast } from 'sonner';
+import { useAgentSelection } from '@/lib/stores/agent-selection-store';
+import { useRealtimePinterestAccounts } from '@/hooks/use-realtime-pinterest-accounts';
 
 interface PinterestAccount {
   id: string;
@@ -59,6 +61,12 @@ export function PinterestToolView({
 }: ToolViewProps) {
   const [copiedId, setCopiedId] = React.useState<string | null>(null);
   const [liveRefresh, setLiveRefresh] = React.useState(0);
+  const { selectedAgentId } = useAgentSelection();
+  const {
+    enabledAccounts: realtimeEnabledAccounts,
+    accounts: realtimeAllAccounts,
+    refreshCount: realtimeRefreshCount,
+  } = useRealtimePinterestAccounts(selectedAgentId || 'suna-default');
   
   // Add real-time refresh capability
   React.useEffect(() => {
@@ -79,6 +87,11 @@ export function PinterestToolView({
     }
   }, [toolContent]);
 
+  // Bump refresh counter when realtime stream updates
+  React.useEffect(() => {
+    setLiveRefresh(realtimeRefreshCount);
+  }, [realtimeRefreshCount]);
+
   const handleCopyAccountId = (accountId: string) => {
     navigator.clipboard.writeText(accountId);
     setCopiedId(accountId);
@@ -97,23 +110,20 @@ export function PinterestToolView({
     return <LoadingState title={loadingTitle} />;
   }
 
-  // Parse the output
+  // Parse the output - Updated to match exact Pinterest tool response format
   let accounts: PinterestAccount[] = [];
   let boards: any[] = [];
   let pinResult: PinterestPin | null = null;
+  let pins: any[] = [];
   let message = '';
   let authUrl = '';
   let buttonText = '';
   let outputToParse: any = null;
   
   try {
+    // Use exact same parsing logic as YouTube tool view
     if (toolContent) {
-      if (typeof toolContent === 'object' && toolContent !== null) {
-        const toolContentObj = toolContent as any;
-        if ('tool_execution' in toolContentObj) {
-          outputToParse = toolContentObj.tool_execution.result?.output;
-        }
-      } else if (typeof toolContent === 'string') {
+      if (typeof toolContent === 'string') {
         try {
           const parsed = JSON.parse(toolContent);
           if (parsed?.tool_execution?.result?.output) {
@@ -125,33 +135,74 @@ export function PinterestToolView({
           outputToParse = toolContent;
         }
       }
+      // Handle other object formats (same as YouTube)
+      else if (typeof toolContent === 'object' && toolContent !== null) {
+        const obj = toolContent as any;
+        // Check if it's wrapped in content field
+        if ('content' in obj) {
+          // Content might be a string with tool_execution JSON
+          if (typeof obj.content === 'string') {
+            try {
+              const parsed = JSON.parse(obj.content);
+              if (parsed?.tool_execution?.result?.output) {
+                outputToParse = parsed.tool_execution.result.output;
+              } else {
+                outputToParse = parsed;
+              }
+            } catch {
+              outputToParse = obj.content;
+            }
+          } else {
+            outputToParse = obj.content;
+          }
+        } else if ('output' in obj) {
+          outputToParse = obj.output;
+        } else {
+          outputToParse = obj;
+        }
+      }
     }
     
+    // Fallback to toolResult if available  
     if (!outputToParse && toolResult?.toolOutput) {
       outputToParse = toolResult.toolOutput;
     }
     
+    // Now parse the output
     if (outputToParse) {
       let parsedData: any;
       
+      // If it's a string, try to parse as JSON (same logic as YouTube)
       if (typeof outputToParse === 'string') {
         try {
           parsedData = JSON.parse(outputToParse);
-        } catch {
-          // Handle plain text responses
-          if (outputToParse.includes('Pinterest')) {
-            message = outputToParse;
+        } catch (jsonError) {
+          // If JSON parsing fails, check if it's a Python ToolResult string
+          const toolResultMatch = outputToParse.match(/ToolResult\(success=(\w+),\s*output="(.*)"\)/);
+          if (toolResultMatch) {
+            const isSuccess = toolResultMatch[1] === 'True';
+            const outputStr = toolResultMatch[2];
+            if (isSuccess && outputStr) {
+              try {
+                // The output might have escaped quotes, try to parse it
+                const unescaped = outputStr.replace(/\\"/g, '"').replace(/\\n/g, '\n');
+                parsedData = JSON.parse(unescaped);
+              } catch {
+                console.error('Failed to parse ToolResult output:', outputStr);
+              }
+            }
           }
         }
       } else {
         parsedData = outputToParse;
       }
       
+      // Extract Pinterest data from parsed result
       if (parsedData) {
         // Check if this is a pin creation result
-        if (parsedData.pin_created && parsedData.pin_id) {
+        if ((parsedData.pin_created && parsedData.pin_id) || parsedData.pin_url) {
           pinResult = {
-            pin_id: parsedData.pin_id,
+            pin_id: parsedData.pin_id || parsedData.id || 'pin',
             pin_url: parsedData.pin_url,
             title: parsedData.title,
             description: parsedData.description,
@@ -159,7 +210,7 @@ export function PinterestToolView({
           };
           message = parsedData.message || '';
         }
-        // Check for accounts
+        // Check for accounts (exact format from Pinterest tool)
         else if (parsedData.accounts !== undefined) {
           accounts = parsedData.accounts || [];
           message = parsedData.message || '';
@@ -169,6 +220,11 @@ export function PinterestToolView({
         // Check for boards
         else if (parsedData.boards !== undefined) {
           boards = parsedData.boards || [];
+          message = parsedData.message || '';
+        }
+        // Recent pins
+        else if (parsedData.pins !== undefined) {
+          pins = parsedData.pins || [];
           message = parsedData.message || '';
         }
         else if (Array.isArray(parsedData)) {
@@ -185,7 +241,23 @@ export function PinterestToolView({
     boards = [];
   }
 
-  const hasAccounts = accounts.length > 0;
+  // Prefer real-time enabled accounts for the currently selected agent
+  const realtimeAccountsFormatted: PinterestAccount[] = React.useMemo(() => {
+    return realtimeEnabledAccounts.map((a: any) => ({
+      id: a.account_id,
+      name: a.account_name,
+      username: a.username,
+      profile_picture: a.profile_picture,
+      subscriber_count: a.follower_count,
+      view_count: 0,
+      video_count: a.pin_count ?? 0,
+    }));
+  }, [realtimeEnabledAccounts]);
+
+  const effectiveAccounts: PinterestAccount[] =
+    realtimeAccountsFormatted.length > 0 ? realtimeAccountsFormatted : accounts;
+
+  const hasAccounts = effectiveAccounts.length > 0;
 
   // Show pin creation result
   if (pinResult) {
@@ -198,7 +270,7 @@ export function PinterestToolView({
                 <img 
                   src="/platforms/pinterest.png" 
                   alt="Pinterest"
-                  className="w-full h-full object-contain"
+                  className="w-full h-full object-contain rounded-full"
                 />
               </div>
               <div>
@@ -272,7 +344,7 @@ export function PinterestToolView({
               <img 
                 src="/platforms/pinterest.png" 
                 alt="Pinterest"
-                className="w-full h-full object-contain"
+                className="w-full h-full object-contain rounded-full"
               />
             </div>
             <div>
@@ -331,6 +403,47 @@ export function PinterestToolView({
     );
   }
 
+  // Show recent pins grid
+  if (pins.length > 0) {
+    return (
+      <Card className="overflow-hidden border-border shadow-lg">
+        <CardHeader className="pb-4">
+          <div className="flex items-center gap-3">
+            <div className="flex items-center justify-center w-10 h-10 bg-white rounded-lg shadow-md p-1.5">
+              <img src="/platforms/pinterest.png" alt="Pinterest" className="w-full h-full object-contain" />
+            </div>
+            <div>
+              <CardTitle className="text-lg font-bold">Recent Pins</CardTitle>
+              <p className="text-xs text-muted-foreground">{pins.length} pin{pins.length !== 1 ? 's' : ''}</p>
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent className="p-4">
+          <ScrollArea className="max-h-[560px]">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+              {pins.map((p: any, idx: number) => (
+                <Card key={idx} className="overflow-hidden border bg-card">
+                  {p.image_url && (
+                    <img src={p.image_url} alt="" className="w-full h-40 object-cover" />
+                  )}
+                  <CardContent className="p-3">
+                    <h4 className="text-sm font-medium line-clamp-1">{p.title || 'Pin'}</h4>
+                    <div className="flex items-center justify-between mt-2">
+                      <Button variant="secondary" size="sm" onClick={() => window.open(p.pin_url, '_blank')}>
+                        <ExternalLink className="h-4 w-4 mr-1" /> View Pin
+                      </Button>
+                      {p.board?.name && <Badge variant="outline">{p.board.name}</Badge>}
+                    </div>
+                  </CardContent>
+                </Card>
+              ))}
+            </div>
+          </ScrollArea>
+        </CardContent>
+      </Card>
+    );
+  }
+
   return (
     <Card className="overflow-hidden border-zinc-200 dark:border-zinc-700 shadow-lg">
       {/* Header */}
@@ -342,7 +455,7 @@ export function PinterestToolView({
               <img 
                 src="/platforms/pinterest.png" 
                 alt="Pinterest"
-                className="w-full h-full object-contain"
+                className="w-full h-full object-contain rounded-full"
               />
             </div>
             <div>
@@ -364,7 +477,7 @@ export function PinterestToolView({
               </Badge>
             )}
             <Badge variant="secondary">
-              {accounts.length} {accounts.length === 1 ? 'Account' : 'Accounts'}
+              {effectiveAccounts.length} {effectiveAccounts.length === 1 ? 'Account' : 'Accounts'}
             </Badge>
           </div>
         </div>
@@ -380,7 +493,7 @@ export function PinterestToolView({
                   <img 
                     src="/platforms/pinterest.png" 
                     alt="Pinterest"
-                    className="h-12 w-12 opacity-40"
+                    className="h-12 w-12 opacity-40 rounded-full"
                   />
                 </div>
                 <div className="prose prose-sm dark:prose-invert max-w-none">
@@ -392,7 +505,7 @@ export function PinterestToolView({
                 <img 
                   src="/platforms/pinterest.png" 
                   alt="Pinterest"
-                  className="h-12 w-12 mx-auto opacity-40 mb-3"
+                  className="h-12 w-12 mx-auto opacity-40 mb-3 rounded-full"
                 />
                 <p className="text-sm text-zinc-600 dark:text-zinc-400 font-medium">
                   No Pinterest accounts enabled
@@ -412,7 +525,7 @@ export function PinterestToolView({
         ) : (
           <ScrollArea className="max-h-[500px]">
             <div className="space-y-4">
-              {accounts.map((account) => (
+              {effectiveAccounts.map((account) => (
                 <Card 
                   key={account.id} 
                   className="overflow-hidden bg-card border border-border hover:bg-accent/5 transition-all duration-200"
@@ -437,7 +550,7 @@ export function PinterestToolView({
                               <img 
                                 src="/platforms/pinterest.png" 
                                 alt="Pinterest"
-                                className="w-full h-full object-contain"
+                                className="w-full h-full object-contain rounded-full"
                               />
                             </div>
                           </div>
@@ -446,7 +559,7 @@ export function PinterestToolView({
                             <img 
                               src="/platforms/pinterest.png" 
                               alt="Pinterest"
-                              className="h-10 w-10 opacity-60"
+                              className="h-10 w-10 opacity-60 rounded-full"
                             />
                           </div>
                         )}
@@ -489,7 +602,7 @@ export function PinterestToolView({
                     </div>
 
                     {/* Right side - Action buttons */}
-                    <div className="flex flex-col justify-center gap-2 p-4 bg-muted/30">
+                    <div className="flex flex-col justify-center gap-2 p-4 bg-transparent">
                       <Button
                         variant="default"
                         size="sm"

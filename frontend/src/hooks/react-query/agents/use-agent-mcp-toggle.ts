@@ -67,6 +67,14 @@ export const useUpdateAgentMcpToggle = () => {
         
         console.log('🔄 Triggered real-time YouTube tool refresh');
       }
+      // REAL-TIME: Invalidate Pinterest when Pinterest toggles change
+      if (variables.mcpId.startsWith('social.pinterest.')) {
+        queryClient.invalidateQueries({ queryKey: ['pinterest', 'accounts'] });
+        queryClient.invalidateQueries({ queryKey: ['pinterest'] });
+        localStorage.setItem('pinterest_toggle_changed', Date.now().toString());
+        localStorage.removeItem('pinterest_toggle_changed');
+        console.log('🔄 Triggered real-time Pinterest tool refresh');
+      }
       
       // Show success message
       toast.success(`${variables.enabled ? 'Enabled' : 'Disabled'} successfully`);
@@ -97,6 +105,25 @@ const useYouTubeChannels = () => {
   });
 };
 
+// Hook to get Pinterest accounts
+const usePinterestAccounts = () => {
+  return useQuery({
+    queryKey: ['pinterest', 'accounts'],
+    queryFn: async () => {
+      try {
+        const response = await backendApi.get<{ success: boolean; accounts: any[] }>(
+          '/pinterest/accounts'
+        );
+        return response.data.accounts || [];
+      } catch (error) {
+        console.error('Failed to fetch Pinterest accounts:', error);
+        return [];
+      }
+    },
+    staleTime: 1000 * 60 * 5,
+  });
+};
+
 // Hook to get MCP configurations for an agent
 export const useAgentMcpConfigurations = (agentId?: string) => {
   // Special handling for suna-default virtual agent
@@ -109,6 +136,7 @@ export const useAgentMcpConfigurations = (agentId?: string) => {
   );
   const { data: composioProfiles, isLoading: composioLoading } = useComposioCredentialsProfiles();
   const { data: youtubeChannels, isLoading: youtubeLoading } = useYouTubeChannels();
+  const { data: pinterestAccounts, isLoading: pinterestLoading } = usePinterestAccounts();
   const { data: toggleStates, isLoading: togglesLoading } = useAgentMcpToggles(agentId);
   
   // Don't fetch agent data for virtual agents
@@ -139,6 +167,30 @@ export const useAgentMcpConfigurations = (agentId?: string) => {
           },
           icon_url: channel.profile_picture_medium || channel.profile_picture,
           profile_picture: channel.profile_picture_medium || channel.profile_picture,
+        });
+      });
+    }
+
+    // Add Pinterest accounts as social media MCPs
+    if (pinterestAccounts && pinterestAccounts.length > 0) {
+      pinterestAccounts.forEach((account: any) => {
+        const mcpId = `social.pinterest.${account.id}`;
+        allMcps.push({
+          name: account.username || account.name,
+          qualifiedName: mcpId,
+          enabled: toggleStates?.[mcpId] !== undefined ? toggleStates[mcpId] : true,
+          isSocialMedia: true,
+          customType: 'social-media',
+          platform: 'pinterest',
+          config: {
+            account_id: account.id,
+            account_name: account.name,
+            username: account.username,
+            profile_picture: account.profile_picture,
+            mcp_url: 'http://localhost:8000/api/pinterest/mcp/stream',
+          },
+          icon_url: account.profile_picture,
+          profile_picture: account.profile_picture,
         });
       });
     }
@@ -188,15 +240,15 @@ export const useAgentMcpConfigurations = (agentId?: string) => {
     }
     
     return allMcps;
-  }, [shouldFetch, agent, composioProfiles, youtubeChannels, toggleStates]);
+  }, [shouldFetch, agent, composioProfiles, youtubeChannels, pinterestAccounts, toggleStates]);
   
   return React.useMemo(() => ({
     data: mcpConfigurations,
     isLoading: isVirtualAgent 
-      ? (composioLoading || youtubeLoading || togglesLoading)
+      ? (composioLoading || youtubeLoading || pinterestLoading || togglesLoading)
       : (shouldFetch 
-        ? (agentLoading || composioLoading || youtubeLoading || togglesLoading) 
-        : (composioLoading || youtubeLoading)),
+        ? (agentLoading || composioLoading || youtubeLoading || pinterestLoading || togglesLoading) 
+        : (composioLoading || youtubeLoading || pinterestLoading)),
     error: isVirtualAgent ? null : (shouldFetch ? agentError : null),
   }), [mcpConfigurations, agentLoading, composioLoading, youtubeLoading, togglesLoading, agentError, shouldFetch, isVirtualAgent]);
 };

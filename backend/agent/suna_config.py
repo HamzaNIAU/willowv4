@@ -6,7 +6,8 @@ SUNA_CONFIG = {
     "description": "Willow is your AI assistant with access to various tools and integrations to help you with tasks across domains.",
     "avatar": "🌞",
     "avatar_color": "#F59E0B",
-    "model": "openrouter/moonshotai/kimi-k2",
+    # Default to OpenAI (OPENAI_API_KEY is configured in .env). Avoid OpenRouter by default.
+    "model": "openai/gpt-5-mini",
     "system_prompt": SYSTEM_PROMPT,
     "configured_mcps": [],
     "custom_mcps": [],
@@ -38,4 +39,3 @@ SUNA_CONFIG = {
     },
     "is_default": True
 }
-

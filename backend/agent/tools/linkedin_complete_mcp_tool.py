@@ -5,7 +5,7 @@ import asyncio
 import aiohttp
 
 from agentpress.tool import Tool, openapi_schema, usage_example, ToolResult
-from services.supabase import get_db_connection
+from services.supabase import DBConnection
 from linkedin_mcp.oauth import LinkedInOAuthHandler
 from linkedin_mcp.accounts import LinkedInAccountService
 from linkedin_mcp.upload import LinkedInUploadService
@@ -19,7 +19,8 @@ class LinkedInCompleteMCPTool(Tool):
         super().__init__()
         self.user_id = user_id
         self.linkedin_accounts = linkedin_accounts or []
-        self.db = get_db_connection()
+        # Use centralized DB connection manager consistent with other tools
+        self.db = DBConnection()
         self.oauth_handler = LinkedInOAuthHandler(self.db)
         self.account_service = LinkedInAccountService(self.db)
         self.upload_service = LinkedInUploadService(self.db)
@@ -244,7 +245,7 @@ class LinkedInCompleteMCPTool(Tool):
         except Exception as e:
             logger.error(f"LinkedIn post creation failed: {e}")
             return self.fail_response(f"Post creation failed: {str(e)}")
-    
+
     @openapi_schema({
         "type": "function",
         "function": {
@@ -454,3 +455,6 @@ class LinkedInCompleteMCPTool(Tool):
         except Exception as e:
             logger.error(f"Failed to get available LinkedIn accounts: {e}")
             return []
+
+# Backward-compatible alias expected by tool registrar
+LinkedInTool = LinkedInCompleteMCPTool

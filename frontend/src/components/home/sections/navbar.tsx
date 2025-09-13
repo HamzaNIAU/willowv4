@@ -135,9 +135,9 @@ export function Navbar() {
                 <Image
                   src={logoSrc}
                   alt="Willow Logo"
-                  width={60}
-                  height={12}
-                  className="md:w-[120px] md:h-[22px]"
+                  width={28}
+                  height={28}
+                  className="w-7 h-7 md:w-[120px] md:h-[22px] object-contain"
                   priority
                 /> 
               </Link>

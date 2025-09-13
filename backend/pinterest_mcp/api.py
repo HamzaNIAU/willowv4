@@ -25,33 +25,106 @@ def initialize(database: DBConnection):
     db = database
 
 
+async def _refresh_pinterest_stats_for_account(user_id: str, account_id: str, access_token: Optional[str] = None) -> Dict[str, Any]:
+    """Fetch latest Pinterest stats and persist to integrations.platform_data.
+
+    Returns a dict of updated stats. Uses integrations as the single source of truth.
+    """
+    from services.unified_integration_service import UnifiedIntegrationService
+
+    integration_service = UnifiedIntegrationService(db)
+    # Load target integration with decrypted tokens
+    integrations = await integration_service.get_user_integrations(user_id, platform="pinterest")
+    target = next((i for i in integrations if i.get("platform_account_id") == account_id), None)
+    if not target:
+        raise Exception("Pinterest account not found")
+
+    token = access_token or target.get("access_token")
+    if not token:
+        raise Exception("No access token available for Pinterest account")
+
+    # Fetch user account to refresh follower/following counts
+    async def _get_user_info(tok: str) -> Dict[str, Any]:
+        import aiohttp
+        headers = {"Authorization": f"Bearer {tok}"}
+        async with aiohttp.ClientSession() as session:
+            async with session.get("https://api.pinterest.com/v5/user_account", headers=headers) as resp:
+                if resp.status != 200:
+                    raise Exception(f"Pinterest user info failed: HTTP {resp.status} {await resp.text()}")
+                return await resp.json()
+
+    # Fetch boards with pagination to derive board_count and pin_count
+    async def _get_boards(tok: str) -> List[Dict[str, Any]]:
+        import aiohttp
+        headers = {"Authorization": f"Bearer {tok}"}
+        boards: List[Dict[str, Any]] = []
+        bookmark = None
+        async with aiohttp.ClientSession() as session:
+            while True:
+                url = "https://api.pinterest.com/v5/boards"
+                params = {"page_size": 50}
+                if bookmark:
+                    params["bookmark"] = bookmark
+                async with session.get(url, headers=headers, params=params) as resp:
+                    if resp.status != 200:
+                        raise Exception(f"Pinterest boards failed: HTTP {resp.status} {await resp.text()}")
+                    data = await resp.json()
+                    items = data.get("items", [])
+                    boards.extend(items)
+                    bookmark = data.get("bookmark")
+                    if not bookmark:
+                        break
+        return boards
+
+    user_info = await _get_user_info(token)
+    boards = await _get_boards(token)
+    board_count = len(boards)
+    # sum pin counts when present; Pinterest board objects may expose 'pin_count'
+    pin_count = 0
+    for b in boards:
+        if isinstance(b, dict) and isinstance(b.get("pin_count"), int):
+            pin_count += b.get("pin_count", 0)
+
+    updates = {
+        "follower_count": user_info.get("follower_count", 0),
+        "following_count": user_info.get("following_count", 0),
+        "board_count": board_count,
+        "pin_count": pin_count,
+        # monthly_views could be added here if analytics scope/endpoints available
+    }
+
+    await integration_service.update_integration_stats(target["id"], updates)
+    return updates
+
+
 @router.post("/auth/initiate")
 async def initiate_auth(
     request: Optional[Dict[str, Any]] = None,
     user_id: str = Depends(get_current_user_id_from_jwt)
 ) -> Dict[str, Any]:
-    """Start Pinterest OAuth flow - Simplified implementation"""
+    """Start Pinterest OAuth flow using configured credentials.
+
+    Previously this endpoint used a hardcoded client_id which caused token exchange
+    to fail when env credentials were different. We now delegate URL construction
+    to PinterestOAuthHandler so client_id/redirect_uri come from env.
+    """
     try:
-        # Pinterest OAuth configuration
-        client_id = "1509701"  # From environment
-        redirect_uri = "http://localhost:8000/api/pinterest/auth/callback"
-        
-        # Create state with user_id
+        # Build state with contextual info
         state_data = {"user_id": user_id}
         if request:
             if "thread_id" in request:
                 state_data["thread_id"] = request["thread_id"]
             if "project_id" in request:
                 state_data["project_id"] = request["project_id"]
-        
-        # Encode state as JSON
+
         state_json = json.dumps(state_data)
         state = base64.urlsafe_b64encode(state_json.encode()).decode()
-        
-        # Pinterest OAuth URL
-        scopes = "pins:read,pins:write,boards:read,boards:write,user_accounts:read"
-        auth_url = f"https://www.pinterest.com/oauth/?client_id={client_id}&redirect_uri={redirect_uri}&scope={scopes}&response_type=code&state={state}"
-        
+
+        # Use OAuth handler (validates env and builds correct URL)
+        from pinterest_mcp.oauth import PinterestOAuthHandler
+        oauth_handler = PinterestOAuthHandler(db)
+        auth_url = oauth_handler.get_auth_url(state=state)
+
         return {
             "success": True,
             "auth_url": auth_url,
@@ -59,7 +132,14 @@ async def initiate_auth(
         }
     except Exception as e:
         logger.error(f"Failed to initiate Pinterest auth: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        # Surface a helpful message for missing env configuration
+        detail = (
+            "Pinterest OAuth is not configured. Set PINTEREST_CLIENT_ID, "
+            "PINTEREST_CLIENT_SECRET, and MCP_CREDENTIAL_ENCRYPTION_KEY."
+            if "not configured" in str(e).lower() or "environment" in str(e).lower()
+            else str(e)
+        )
+        raise HTTPException(status_code=500, detail=detail)
 
 
 @router.get("/auth/callback")
@@ -108,7 +188,7 @@ async def auth_callback(
             
         except Exception as api_error:
             logger.error(f"🚨 PINTEREST API FAILED: {api_error}")
-            # REMOVE MOCK FALLBACK - Let it fail instead
+            # Let it fail so frontend shows helpful error
             raise Exception(f"Pinterest API authentication failed: {api_error}")
         
         # Prepare account info with real data from Pinterest API
@@ -135,11 +215,28 @@ async def auth_callback(
             }
         }
         
-        # Use unified social media service to save account
-        social_service = UnifiedSocialMediaService(db)
-        account_id = await social_service.save_account(user_id, "pinterest", account_info)
+        # Persist account using unified integrations (Postiz-style),
+        # matching the reader used by GET /pinterest/accounts
+        try:
+            await oauth_handler.save_account(
+                user_id=user_id,
+                account_info=account_info,
+                access_token=access_token,
+                refresh_token=refresh_token,
+                expires_at=expires_at,
+            )
+        except Exception as save_err:
+            logger.error(f"Failed to persist Pinterest account via unified integrations: {save_err}")
+            raise
         
         logger.info(f"✅ Saved Pinterest account {account_info['id']} for user {user_id} using unified service")
+
+        # Immediately refresh rich stats (boards/pins) before notifying UI
+        try:
+            await _refresh_pinterest_stats_for_account(user_id, account_info['id'], access_token=access_token)
+            logger.info("Refreshed Pinterest stats after connect")
+        except Exception as refresh_err:
+            logger.warning(f"Could not refresh Pinterest stats after connect: {refresh_err}")
         
         # Create MCP toggles for all user's real agents (EXACTLY like YouTube)
         try:
@@ -208,14 +305,27 @@ async def auth_callback(
         
         logger.info(f"✅ Pinterest OAuth completed successfully following YouTube pattern")
         
+        # Use robust success flow with opener postMessage and localStorage fallback
         return HTMLResponse(content=f"""
         <html>
             <script>
-                window.opener.postMessage({{
-                    type: 'pinterest-auth-success',
-                    account: {json.dumps(account_info)}
-                }}, '*');
-                window.close();
+                (function() {{
+                  var payload = {{ type: 'pinterest-auth-success', account: {json.dumps(account_info)} }};
+                  try {{
+                    if (window.opener && !window.opener.closed) {{
+                      window.opener.postMessage(payload, '*');
+                    }} else {{
+                      localStorage.setItem('pinterest-auth-result', JSON.stringify(payload));
+                    }}
+                  }} catch (e) {{
+                    try {{
+                      localStorage.setItem('pinterest-auth-result', JSON.stringify(payload));
+                    }} catch (_) {{}}
+                  }}
+                  setTimeout(function() {{
+                    try {{ window.close(); }} catch(_) {{}}
+                  }}, 500);
+                }})();
             </script>
         </html>
         """)
@@ -225,11 +335,19 @@ async def auth_callback(
         return HTMLResponse(content=f"""
         <html>
             <script>
-                window.opener.postMessage({{
-                    type: 'pinterest-auth-error',
-                    error: 'Connection failed'
-                }}, '*');
-                window.close();
+                (function() {{
+                  var payload = {{ type: 'pinterest-auth-error', error: 'Connection failed' }};
+                  try {{
+                    if (window.opener && !window.opener.closed) {{
+                      window.opener.postMessage(payload, '*');
+                    }} else {{
+                      localStorage.setItem('pinterest-auth-result', JSON.stringify(payload));
+                    }}
+                  }} catch (e) {{
+                    try {{ localStorage.setItem('pinterest-auth-result', JSON.stringify(payload)); }} catch(_) {{}}
+                  }}
+                  setTimeout(function() {{ try {{ window.close(); }} catch(_) {{}} }}, 500);
+                }})();
             </script>
         </html>
         """)
@@ -254,12 +372,17 @@ async def get_accounts(
                 "id": integration["platform_account_id"],
                 "name": integration["name"],
                 "username": platform_data.get("username"),
-                "profile_image": integration["picture"],
+                # Align with frontend types that expect 'profile_picture'
+                "profile_picture": integration["picture"],
                 "bio": platform_data.get("bio"),
                 "website_url": platform_data.get("website_url"),
                 "follower_count": platform_data.get("follower_count", 0),
                 "following_count": platform_data.get("following_count", 0),
                 "pin_count": platform_data.get("pin_count", 0),
+                # UI compatibility aliases
+                "subscriber_count": platform_data.get("follower_count", 0),
+                "video_count": platform_data.get("pin_count", 0),
+                "view_count": platform_data.get("monthly_views", 0),
                 "board_count": platform_data.get("board_count", 0),
                 "account_type": platform_data.get("account_type", "PERSONAL"),
                 "is_active": not integration["disabled"],
@@ -293,40 +416,48 @@ async def remove_account(
         
         logger.info(f"Attempting to remove Pinterest account {account_id} for user {user_id}")
         
-        # Use unified service to remove account
-        social_service = UnifiedSocialMediaService(db)
-        success = await social_service.remove_account(user_id, "pinterest", account_id)
-        
+        # Use universal integrations system to disable integration(s) for this account
+        from services.unified_integration_service import UnifiedIntegrationService
+        integration_service = UnifiedIntegrationService(db)
+
+        integrations = await integration_service.get_user_integrations(user_id, platform="pinterest")
+        target = next((i for i in integrations if i.get("platform_account_id") == account_id), None)
+
+        if not target:
+            raise HTTPException(status_code=404, detail="Pinterest account not found")
+
+        success = await integration_service.remove_integration(user_id, target["id"])
+
         if success:
-            # Also remove from agent_social_accounts if it exists
+            # Best-effort cleanup from agent_social_accounts
             client = await db.client
             await client.table("agent_social_accounts").delete().eq(
                 "user_id", user_id
             ).eq("platform", "pinterest").eq("account_id", account_id).execute()
-            
-            return {
-                "success": True,
-                "message": "Pinterest account disconnected successfully"
-            }
+
+            return {"success": True, "message": "Pinterest account disconnected successfully"}
         else:
-            # If not found with cleaned ID, try to find and remove any Pinterest accounts for this user
-            logger.warning(f"Pinterest account {account_id} not found, checking for any Pinterest accounts")
-            client = await db.client
-            result = await client.table("social_media_accounts").delete().eq(
-                "user_id", user_id
-            ).eq("platform", "pinterest").execute()
-            
-            if result.data:
-                logger.info(f"Removed {len(result.data)} Pinterest account(s) for user {user_id}")
-                return {
-                    "success": True,
-                    "message": "Pinterest account disconnected successfully"
-                }
-            else:
-                raise HTTPException(status_code=404, detail="Pinterest account not found")
+            raise HTTPException(status_code=500, detail="Failed to disable integration")
         
     except Exception as e:
         logger.error(f"Failed to remove Pinterest account: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/accounts/{account_id}/refresh")
+async def refresh_account_stats(
+    account_id: str,
+    user_id: str = Depends(get_current_user_id_from_jwt)
+) -> Dict[str, Any]:
+    """Refresh Pinterest account statistics (boards, pins, followers) and persist.
+
+    Uses the integrations table for tokens and updates platform_data.
+    """
+    try:
+        updated = await _refresh_pinterest_stats_for_account(user_id, account_id)
+        return {"success": True, "account_id": account_id, "updated": updated}
+    except Exception as e:
+        logger.error(f"Failed to refresh Pinterest stats: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -409,6 +540,31 @@ async def create_pin(
         logger.error(f"Pinterest pin creation failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+
+@router.get("/pins/{account_id}/recent")
+async def get_recent_pins(
+    account_id: str,
+    limit: int = 10,
+    user_id: str = Depends(get_current_user_id_from_jwt)
+) -> Dict[str, Any]:
+    """Return recent pins for an account (demo/mocked)."""
+    try:
+        now = datetime.now(timezone.utc)
+        pins = []
+        for i in range(min(limit, 8)):
+            pin_id = f"mockpin_{i}"
+            pins.append({
+                "id": pin_id,
+                "title": f"Inspiration #{i+1}",
+                "pin_url": f"https://www.pinterest.com/pin/{pin_id}/",
+                "image_url": "https://picsum.photos/seed/pin-" + str(i) + "/400/300",
+                "created_at": (now - timedelta(hours=i*3)).isoformat(),
+                "board": {"id": "board_123", "name": "Inspiration"}
+            })
+        return {"success": True, "account_id": account_id, "pins": pins, "count": len(pins)}
+    except Exception as e:
+        logger.error(f"Failed to get recent pins: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/universal-upload")
 async def universal_upload(

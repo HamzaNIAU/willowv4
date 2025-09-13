@@ -1,7 +1,7 @@
 import React from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { CircleDashed, Maximize2 } from 'lucide-react';
-import { getToolIcon, getUserFriendlyToolName } from '@/components/thread/utils';
+import { getToolIcon, getUserFriendlyToolName, getBrandStyles } from '@/components/thread/utils';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 
@@ -87,6 +87,7 @@ export const FloatingToolPreview: React.FC<FloatingToolPreviewProps> = ({
   const CurrentToolIcon = getToolIcon(toolName);
   const isStreaming = currentToolCall.toolResult?.content === 'STREAMING';
   const isSuccess = isStreaming ? true : getToolResultStatus(currentToolCall);
+  const brand = getBrandStyles(toolName);
 
   const handleClick = () => {
     setIsExpanding(true);
@@ -124,26 +125,22 @@ export const FloatingToolPreview: React.FC<FloatingToolPreviewProps> = ({
                 <motion.div
                   layoutId="tool-icon"
                   className={cn(
-                    "w-10 h-10 rounded-2xl flex items-center justify-center",
-                    isStreaming
-                      ? "bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800"
-                      : isSuccess
-                        ? "bg-green-50 dark:bg-green-900/20 border border-green-300 dark:border-green-800"
-                        : "bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800"
+                    "w-10 h-10 rounded-xl flex items-center justify-center overflow-hidden",
+                    brand ? brand.bg : (isSuccess ? 'bg-muted' : 'bg-muted')
                   )}
                   style={{ opacity: isExpanding ? 0 : 1 }}
                 >
                   {isStreaming ? (
-                    <CircleDashed className="h-5 w-5 text-blue-500 dark:text-blue-400 animate-spin" style={{ opacity: isExpanding ? 0 : 1 }} />
+                    <CircleDashed className="h-5 w-5 text-white animate-spin" style={{ opacity: isExpanding ? 0 : 1 }} />
                   ) : (
-                    <CurrentToolIcon className="h-5 w-5 text-foreground" style={{ opacity: isExpanding ? 0 : 1 }} />
+                    <CurrentToolIcon className={cn('h-5 w-5', brand ? 'brightness-0 invert' : 'text-foreground')} style={{ opacity: isExpanding ? 0 : 1 }} />
                   )}
                 </motion.div>
               </div>
 
               <div className="flex-1 min-w-0" style={{ opacity: isExpanding ? 0 : 1 }}>
                 <motion.div layoutId="tool-title" className="flex items-center gap-2 mb-1">
-                  <h4 className="text-sm font-medium text-foreground truncate">
+                  <h4 className={cn("text-sm font-medium truncate", brand ? 'text-foreground' : 'text-foreground')}>
                     {getUserFriendlyToolName(toolName)}
                   </h4>
                 </motion.div>

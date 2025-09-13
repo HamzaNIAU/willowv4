@@ -190,6 +190,28 @@ class MCPToggleService:
         For YouTube channels, auto-enables connected channels that don't have explicit toggles
         """
         try:
+            # Special handling for suna-default virtual agent: derive enabled social integrations
+            if agent_id == "suna-default":
+                try:
+                    from services.unified_integration_service import UnifiedIntegrationService
+                    integration_service = UnifiedIntegrationService(self.db)
+                    # Get all integrations for the agent filtered by platform if requested
+                    platform_filter = None
+                    if mcp_type and mcp_type.startswith("social."):
+                        # mcp_type like 'social.youtube' -> platform 'youtube'
+                        platform_filter = mcp_type.split(".", 1)[1]
+                    integrations = await integration_service.get_agent_integrations(agent_id, user_id, platform=platform_filter)
+                    enabled_mcp_ids: List[str] = []
+                    for integ in integrations:
+                        platform = integ.get("platform")
+                        account_id = integ.get("platform_account_id")
+                        if platform and account_id:
+                            enabled_mcp_ids.append(f"social.{platform}.{account_id}")
+                    logger.info(f"[MCPToggleService] (suna-default) Enabled MCPs via unified integrations: {enabled_mcp_ids}")
+                    return enabled_mcp_ids
+                except Exception as e:
+                    logger.warning(f"[MCPToggleService] (suna-default) Failed to resolve unified integrations: {e}")
+                    # Fall through to generic handling below
             logger.info(f"[MCPToggleService] get_enabled_mcps called with agent_id={agent_id}, user_id={user_id}, mcp_type={mcp_type}")
             client = await self.db.client
             

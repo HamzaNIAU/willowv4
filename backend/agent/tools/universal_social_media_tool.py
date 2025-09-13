@@ -53,6 +53,13 @@ class UniversalSocialMediaTool(AgentBuilderBaseTool):
                 'supports_image': True,
                 'max_file_size_mb': 5000,
                 'formats': ['mp4', 'mov', 'jpg', 'png']
+            },
+            'pinterest': {
+                'name': 'Pinterest',
+                'supports_video': False,
+                'supports_image': True,
+                'max_file_size_mb': 50,
+                'formats': ['jpg', 'png']
             }
         }
         
@@ -254,6 +261,117 @@ class UniversalSocialMediaTool(AgentBuilderBaseTool):
         except Exception as e:
             logger.error(f"[Universal Social Media] Upload error: {e}", exc_info=True)
             return self.fail_response(f"Upload failed: {str(e)}")
+
+    @openapi_schema({
+        "type": "function",
+        "function": {
+            "name": "upload_to_all_enabled",
+            "description": "Upload the same content to all enabled social platforms for the selected agent (YouTube, TikTok, Instagram, Twitter/X, LinkedIn, Pinterest). Returns per‑platform upload IDs for progress tracking.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": { "type": "string", "description": "Title or headline for the content (can be a brief/topic; the agent may enhance it)." },
+                    "description": { "type": "string", "description": "Longer description/caption text. Optional." },
+                    "tags": { "type": "array", "items": { "type": "string" }, "description": "Tags/hashtags to include. Optional." },
+                    "privacy": { "type": "string", "enum": ["public", "private", "unlisted"], "default": "public" },
+                    "auto_discover": { "type": "boolean", "default": True, "description": "Automatically find recently uploaded files if references aren’t provided." },
+                    "platforms": { "type": "array", "items": { "type": "string", "enum": ["youtube", "tiktok", "instagram", "twitter", "linkedin", "pinterest"] }, "description": "Restrict to these platforms. Default = all supported." }
+                },
+                "required": ["title"]
+            }
+        }
+    })
+    async def upload_to_all_enabled(
+        self,
+        title: str,
+        description: str = "",
+        tags: Optional[List[str]] = None,
+        privacy: str = "public",
+        auto_discover: bool = True,
+        platforms: Optional[List[str]] = None,
+    ) -> ToolResult:
+        """Upload to all enabled social platforms for the current agent/user."""
+        try:
+            # Determine target platforms
+            target_platforms = platforms or [
+                'youtube', 'tiktok', 'instagram', 'twitter', 'linkedin', 'pinterest'
+            ]
+            target_platforms = [p for p in target_platforms if p in self.supported_platforms]
+
+            # Resolve accounts per platform
+            async def _accounts_for(p: str) -> List[Dict[str, Any]]:
+                return await self._get_platform_accounts(p)
+
+            uploads: List[Dict[str, Any]] = []
+            skipped: List[str] = []
+            for p in target_platforms:
+                accounts = await _accounts_for(p)
+                if not accounts:
+                    skipped.append(p)
+                    continue
+
+                account = accounts[0]  # use first enabled account for now
+                params = {
+                    "platform": p,
+                    "account_id": account["platform_account_id"],
+                    "account_name": account.get("display_name") or account.get("account_name") or account.get("username") or p,
+                    "title": title,
+                    "description": description or "",
+                    "tags": tags or [],
+                    "privacy_status": privacy,
+                    "auto_discover": auto_discover,
+                    "file_name": "auto-detected",
+                    "file_size": 0,
+                    "platform_settings": self._get_platform_specific_settings(p),
+                    "platform_metadata": {"upload_source": "agent_tool_batch"}
+                }
+
+                # Fire the universal upload for this platform
+                async with aiohttp.ClientSession() as session:
+                    headers = {"Authorization": f"Bearer {self.jwt_token}", "Content-Type": "application/json"}
+                    async with session.post(f"{self.base_url}/social-media/upload", headers=headers, json=params) as resp:
+                        if resp.status != 200:
+                            msg = await resp.text()
+                            uploads.append({"platform": p, "success": False, "error": msg})
+                        else:
+                            data = await resp.json()
+                            if data.get("success"):
+                                uploads.append({
+                                    "platform": p,
+                                    "success": True,
+                                    "upload_id": data.get("upload_id"),
+                                    "account": {"id": account["platform_account_id"], "name": params["account_name"]},
+                                    "title": title,
+                                })
+                            else:
+                                uploads.append({"platform": p, "success": False, "error": data.get("message")})
+
+            # Build summary message
+            ok = [u for u in uploads if u.get("success")]
+            fail = [u for u in uploads if not u.get("success")]
+            lines = ["📢 **Batch upload started**"]
+            if ok:
+                lines.append("\n✅ Uploads queued:")
+                for u in ok:
+                    lines.append(f"• {self.supported_platforms[u['platform']]['name']} → {u['account']['name']} (upload_id: {u['upload_id']})")
+            if fail:
+                lines.append("\n❌ Failed to queue:")
+                for u in fail:
+                    lines.append(f"• {self.supported_platforms[u['platform']]['name']}: {u.get('error','error')}")
+            if skipped:
+                lines.append("\nℹ️ No enabled accounts:")
+                for p in skipped:
+                    lines.append(f"• {self.supported_platforms[p]['name']}")
+
+            return self.success_response({
+                "message": "\n".join(lines),
+                "results": uploads,
+                "skipped": skipped,
+            })
+
+        except Exception as e:
+            logger.error(f"[Universal Social Media] Batch upload error: {e}", exc_info=True)
+            return self.fail_response(str(e))
     
     @openapi_schema({
         "type": "function", 

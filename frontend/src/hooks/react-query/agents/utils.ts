@@ -157,7 +157,11 @@ export const getAgents = async (params: AgentsParams = {}): Promise<AgentsRespon
   try {
     const agentPlaygroundEnabled = await isFlagEnabled('custom_agents');
     if (!agentPlaygroundEnabled) {
-      throw new Error('Custom agents is not enabled');
+      // Single-agent mode: return empty list without warnings
+      return {
+        agents: [],
+        pagination: { page: 1, limit: 0, total: 0, pages: 1 },
+      };
     }
     const supabase = createClient();
     const { data: { session } } = await supabase.auth.getSession();
@@ -195,21 +199,9 @@ export const getAgents = async (params: AgentsParams = {}): Promise<AgentsRespon
     const result = await response.json();
     return result;
   } catch (err) {
-    // Throttle error logging when custom agents is disabled
-    if (err instanceof Error && err.message === 'Custom agents is not enabled') {
-      // Only log once every 30 seconds to avoid spam
-      const lastLoggedKey = 'custom_agents_error_logged';
-      const lastLogged = parseInt(localStorage.getItem(lastLoggedKey) || '0');
-      const now = Date.now();
-      
-      if (now - lastLogged > 30000) { // 30 seconds
-        console.warn('Custom agents is disabled - agent API calls will fail silently');
-        localStorage.setItem(lastLoggedKey, now.toString());
-      }
-    } else {
-      console.error('Error fetching agents:', err);
-    }
-    throw err;
+    console.error('Error fetching agents:', err);
+    // Graceful fallback
+    return { agents: [], pagination: { page: 1, limit: 0, total: 0, pages: 1 } };
   }
 };
 
@@ -390,7 +382,24 @@ export const getThreadAgent = async (threadId: string): Promise<ThreadAgentRespo
   try {
     const agentPlaygroundEnabled = await isFlagEnabled('custom_agents');
     if (!agentPlaygroundEnabled) {
-      throw new Error('Custom agents is not enabled');
+      // Single-agent mode: surface the default agent without network calls
+      return {
+        agent: {
+          agent_id: 'suna-default',
+          account_id: '',
+          name: 'Willow',
+          description: 'Default AI assistant',
+          system_prompt: '',
+          configured_mcps: [],
+          agentpress_tools: {},
+          is_default: true,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+          metadata: { is_suna_default: true },
+        } as any,
+        source: 'default',
+        message: 'Default agent (single-agent mode)',
+      };
     }
     const supabase = createClient();
     const { data: { session } } = await supabase.auth.getSession();
@@ -415,21 +424,9 @@ export const getThreadAgent = async (threadId: string): Promise<ThreadAgentRespo
     const agent = await response.json();
     return agent;
   } catch (err) {
-    // Throttle error logging when custom agents is disabled
-    if (err instanceof Error && err.message === 'Custom agents is not enabled') {
-      // Only log once every 30 seconds to avoid spam
-      const lastLoggedKey = 'thread_agent_error_logged';
-      const lastLogged = parseInt(localStorage.getItem(lastLoggedKey) || '0');
-      const now = Date.now();
-      
-      if (now - lastLogged > 30000) { // 30 seconds
-        console.warn('Custom agents is disabled - thread agent API calls will fail silently');
-        localStorage.setItem(lastLoggedKey, now.toString());
-      }
-    } else {
-      console.error('Error fetching thread agent:', err);
-    }
-    throw err;
+    console.error('Error fetching thread agent:', err);
+    // Graceful fallback
+    return { agent: null, source: 'none', message: 'Unavailable' };
   }
 };
 

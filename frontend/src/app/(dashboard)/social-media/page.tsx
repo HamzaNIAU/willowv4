@@ -3,6 +3,7 @@
 import React, { useState, useMemo } from 'react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
@@ -45,8 +46,10 @@ import {
   Trash2,
   Copy,
   EyeOff,
-  MoreVertical
+  MoreVertical,
+  Pin
 } from 'lucide-react';
+import { LayoutGrid } from 'lucide-react';
 
 // Custom platform SVG components
 const YoutubeSvg = ({ className }: { className?: string }) => (
@@ -103,6 +106,7 @@ interface PinterestAccount {
   subscriber_count: number;
   view_count: number;
   video_count: number;
+  board_count?: number;
   created_at: string;
 }
 
@@ -142,6 +146,7 @@ const platformColors = {
 
 interface SocialPlatformGroup {
   name: string;
+  key: 'youtube' | 'pinterest' | 'linkedin' | 'instagram' | 'twitter' | 'tiktok' | 'facebook' | 'twitch' | string;
   icon: any;
   icon_url?: string;
   color: string;
@@ -261,7 +266,12 @@ export default function SocialMediaPage() {
   // Remove YouTube channel
   const removeYouTubeChannel = useMutation({
     mutationFn: async (channelId: string) => {
-      await backendApi.delete(`/youtube/channels/${channelId}`);
+      const res = await backendApi.delete(`/youtube/channels/${channelId}`);
+      if (!res.success) {
+        // Ensure errors propagate so onSuccess is not called
+        throw (res.error as any) || new Error('Failed to disconnect YouTube channel');
+      }
+      return res.data;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['youtube', 'channels'] });
@@ -275,7 +285,11 @@ export default function SocialMediaPage() {
   // Remove Pinterest account
   const removePinterestAccount = useMutation({
     mutationFn: async (accountId: string) => {
-      await backendApi.delete(`/pinterest/accounts/${accountId}`);
+      const res = await backendApi.delete(`/pinterest/accounts/${accountId}`);
+      if (!res.success) {
+        throw (res.error as any) || new Error('Failed to disconnect Pinterest account');
+      }
+      return res.data;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['pinterest', 'accounts'] });
@@ -285,6 +299,22 @@ export default function SocialMediaPage() {
       toast.error(error.message || 'Failed to disconnect account');
     },
   });
+
+  // Centralized, key-safe disconnect handler with logging
+  const handleDisconnect = (platformKey: string, accountId: string) => {
+    try {
+      console.log('[SocialMedia] Disconnect clicked', { platformKey, accountId });
+      if (platformKey === 'youtube') {
+        removeYouTubeChannel.mutate(accountId);
+      } else if (platformKey === 'pinterest') {
+        removePinterestAccount.mutate(accountId);
+      } else {
+        toast.info('Disconnect not supported for ' + platformKey);
+      }
+    } catch (e) {
+      console.error('[SocialMedia] Disconnect error', e);
+    }
+  };
 
   const handleConnectYouTube = () => {
     setConnectingPlatform('youtube');
@@ -311,18 +341,52 @@ export default function SocialMediaPage() {
           if (event.data?.type === 'pinterest-auth-success') {
             popup?.close();
             queryClient.invalidateQueries({ queryKey: ['pinterest', 'accounts'] });
-            toast.success('Pinterest account connected successfully!');
+            const account = event.data.account;
+            if (account && (account.name || account.username)) {
+              toast.success(
+                <div className="flex items-center gap-3">
+                  {account.profile_image_url && (
+                    <img src={account.profile_image_url} alt="" className="w-8 h-8 rounded-full" />
+                  )}
+                  <div>
+                    <div className="font-semibold">Connected Successfully!</div>
+                    <div className="text-sm opacity-90">
+                      {account.name || account.username} {account.username && `• @${account.username}`}
+                    </div>
+                  </div>
+                </div>
+              );
+            } else {
+              toast.success('Pinterest account connected successfully!');
+            }
             window.removeEventListener('message', handleMessage);
+            window.removeEventListener('storage', handleStorage);
             setConnectingPlatform(null);
           } else if (event.data?.type === 'pinterest-auth-error') {
             popup?.close();
             toast.error(`Failed to connect: ${event.data.error}`);
             window.removeEventListener('message', handleMessage);
+            window.removeEventListener('storage', handleStorage);
             setConnectingPlatform(null);
+          }
+        };
+        // Fallback via localStorage in case postMessage is blocked
+        const handleStorage = (event: StorageEvent) => {
+          if (event.key === 'pinterest-auth-result' && event.newValue) {
+            try {
+              const result = JSON.parse(event.newValue);
+              if (result.type === 'pinterest-auth-success' || result.type === 'pinterest-auth-error') {
+                handleMessage({ data: result } as MessageEvent);
+                localStorage.removeItem('pinterest-auth-result');
+              }
+            } catch (e) {
+              console.error('Failed to parse storage event:', e);
+            }
           }
         };
         
         window.addEventListener('message', handleMessage);
+        window.addEventListener('storage', handleStorage);
       }
     },
     onError: (error: any) => {
@@ -516,13 +580,11 @@ export default function SocialMediaPage() {
     initiateTikTokAuth.mutate();
   };
 
-  const formatCount = (count: number): string => {
-    if (count >= 1_000_000) {
-      return `${(count / 1_000_000).toFixed(1)}M`;
-    } else if (count >= 1_000) {
-      return `${(count / 1_000).toFixed(1)}K`;
-    }
-    return count.toString();
+  const formatCount = (count?: number): string => {
+    const n = typeof count === 'number' && isFinite(count) ? count : 0;
+    if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+    if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
+    return `${n}`;
   };
 
   // Group platforms with their connected accounts
@@ -530,6 +592,7 @@ export default function SocialMediaPage() {
     const platforms: SocialPlatformGroup[] = [
       {
         name: 'YouTube',
+        key: 'youtube',
         icon: YoutubeSvg,
         color: 'text-red-600 dark:text-red-500',
         accounts: youtubeChannels || [],
@@ -538,30 +601,34 @@ export default function SocialMediaPage() {
       },
       {
         name: 'Instagram',
+        key: 'instagram',
         icon: InstagramSvg,
         color: 'text-pink-600 dark:text-pink-500',
         accounts: [],
-        available: false,
+        available: true,
         description: 'Post photos and stories, manage content, and track engagement'
       },
       {
         name: 'X (Twitter)',
+        key: 'twitter',
         icon: TwitterSvg,
         color: 'text-blue-600 dark:text-blue-500',
         accounts: [],
-        available: false,
+        available: true,
         description: 'Tweet, schedule posts, and analyze engagement metrics'
       },
       {
         name: 'TikTok',
+        key: 'tiktok',
         icon: TikTokSvg,
         color: 'text-gray-900 dark:text-gray-100',
         accounts: [],
-        available: false,
+        available: true,
         description: 'Upload short videos, track trends, and manage content'
       },
       {
         name: 'LinkedIn',
+        key: 'linkedin',
         icon: LinkedInSvg,
         color: 'text-blue-700 dark:text-blue-600',
         accounts: linkedinAccounts || [],
@@ -570,28 +637,14 @@ export default function SocialMediaPage() {
       },
       {
         name: 'Pinterest',
+        key: 'pinterest',
         icon: () => <img src="/platforms/pinterest.png" alt="Pinterest" className="h-6 w-6" />,
         color: 'text-red-600 dark:text-red-500',
         accounts: pinterestAccounts || [],
         available: true,
         description: 'Create pins, manage boards, and track engagement'
       },
-      {
-        name: 'Facebook',
-        icon: FacebookSvg,
-        color: 'text-blue-600 dark:text-blue-500',
-        accounts: [],
-        available: false,
-        description: 'Manage pages, post content, and track engagement'
-      },
-      {
-        name: 'Twitch',
-        icon: TwitchSvg,
-        color: 'text-purple-600 dark:text-purple-500',
-        accounts: [],
-        available: false,
-        description: 'Stream management, VOD uploads, and analytics'
-      }
+      // Facebook and Twitch temporarily hidden from UI
     ];
 
     // Filter based on search
@@ -662,12 +715,15 @@ export default function SocialMediaPage() {
                     </div>
                     <Button
                       onClick={
-                        platform.name === 'YouTube' ? handleConnectYouTube :
-                        platform.name === 'Pinterest' ? handleConnectPinterest :
-                        platform.name === 'LinkedIn' ? handleConnectLinkedIn :
+                        platform.key === 'youtube' ? handleConnectYouTube :
+                        platform.key === 'pinterest' ? handleConnectPinterest :
+                        platform.key === 'linkedin' ? handleConnectLinkedIn :
+                        platform.key === 'instagram' ? handleConnectInstagram :
+                        platform.key === 'twitter' ? handleConnectTwitter :
+                        platform.key === 'tiktok' ? handleConnectTikTok :
                         undefined
                       }
-                      disabled={!platform.available || connectingPlatform === platform.name.toLowerCase()}
+                      disabled={!platform.available || connectingPlatform === platform.key}
                       size="sm"
                     >
                       <Plus className="h-4 w-4 mr-2" />
@@ -730,17 +786,45 @@ export default function SocialMediaPage() {
                             </TableCell>
                             <TableCell>
                               <div className="flex items-center gap-6 text-sm">
-                                <div className="flex items-center gap-1">
-                                  <Users className="h-3.5 w-3.5 text-muted-foreground" />
-                                  <span>{formatCount(channel.subscriber_count)}</span>
+                                {/* Followers / Subscribers */}
+                                <div className="flex flex-col items-center min-w-[72px]">
+                                  <div className="flex items-center gap-1">
+                                    <Users className="h-3.5 w-3.5 text-muted-foreground" />
+                                    <span>{formatCount(channel.subscriber_count)}</span>
+                                  </div>
+                                  <div className="text-[10px] text-muted-foreground">
+                                    {platform.name === 'Pinterest' ? 'Followers' : 'Subscribers'}
+                                  </div>
                                 </div>
-                                <div className="flex items-center gap-1">
-                                  <Eye className="h-3.5 w-3.5 text-muted-foreground" />
-                                  <span>{formatCount(channel.view_count)}</span>
+                                {/* Views (YouTube) or Monthly Views (Pinterest) */}
+                                <div className="flex flex-col items-center min-w-[72px]">
+                                  <div className="flex items-center gap-1">
+                                    <Eye className="h-3.5 w-3.5 text-muted-foreground" />
+                                    <span>{formatCount(channel.view_count)}</span>
+                                  </div>
+                                  <div className="text-[10px] text-muted-foreground">Views</div>
                                 </div>
-                                <div className="flex items-center gap-1">
-                                  <PlayCircle className="h-3.5 w-3.5 text-muted-foreground" />
-                                  <span>{channel.video_count}</span>
+                                {/* Videos (YouTube) or Pins (Pinterest), with board count badge for Pinterest */}
+                                <div className="flex flex-col items-center min-w-[72px]">
+                                  <div className="flex items-center gap-2">
+                                    <div className="flex items-center gap-1">
+                                      {platform.name === 'Pinterest' ? (
+                                        <Pin className="h-3.5 w-3.5 text-muted-foreground" />
+                                      ) : (
+                                        <PlayCircle className="h-3.5 w-3.5 text-muted-foreground" />
+                                      )}
+                                      <span>{formatCount(channel.video_count)}</span>
+                                    </div>
+                                    {platform.name === 'Pinterest' && typeof (channel as PinterestAccount).board_count !== 'undefined' && (
+                                      <Badge variant="secondary" className="h-5 px-1.5 py-0 text-[10px] flex items-center gap-1">
+                                        <LayoutGrid className="h-3 w-3" />
+                                        {formatCount((channel as PinterestAccount).board_count)}
+                                      </Badge>
+                                    )}
+                                  </div>
+                                  <div className="text-[10px] text-muted-foreground">
+                                    {platform.name === 'Pinterest' ? 'Pins' : 'Videos'}
+                                  </div>
                                 </div>
                               </div>
                             </TableCell>
@@ -760,9 +844,9 @@ export default function SocialMediaPage() {
                                 <DropdownMenuContent align="end">
                                   <DropdownMenuItem 
                                     onClick={() => {
-                                      const url = platform.name === 'YouTube' 
+                                      const url = platform.key === 'youtube' 
                                         ? `https://youtube.com/channel/${channel.id}`
-                                        : platform.name === 'Pinterest'
+                                        : platform.key === 'pinterest'
                                         ? `https://pinterest.com/${channel.username || 'profile'}`
                                         : '#';
                                       window.open(url, '_blank');
@@ -771,7 +855,7 @@ export default function SocialMediaPage() {
                                     <ExternalLink className="h-4 w-4 mr-2" />
                                     View {platform.name === 'Pinterest' ? 'Profile' : 'Channel'}
                                   </DropdownMenuItem>
-                                  {platform.name === 'YouTube' && (
+                                  {platform.key === 'youtube' && (
                                     <>
                                       <DropdownMenuItem
                                         onClick={() => {
@@ -785,20 +869,12 @@ export default function SocialMediaPage() {
                                       <DropdownMenuSeparator />
                                     </>
                                   )}
-                                  {platform.name !== 'YouTube' && <DropdownMenuSeparator />}
+                                  {platform.key !== 'youtube' && <DropdownMenuSeparator />}
                                   <DropdownMenuItem
                                     onClick={() => {
-                                      console.log('🐛 DEBUG: platform.name =', platform.name, 'channel.id =', channel.id);
-                                      console.log('🐛 DEBUG: platform =', platform);
-                                      if (platform.name === 'YouTube') {
-                                        console.log('🐛 Calling YouTube disconnect');
-                                        removeYouTubeChannel.mutate(channel.id);
-                                      } else if (platform.name === 'Pinterest') {
-                                        console.log('🐛 Calling Pinterest disconnect');
-                                        removePinterestAccount.mutate(channel.id);
-                                      } else {
-                                        console.log('🐛 No platform match!', platform.name);
-                                      }
+                                      // Capture platform key explicitly to avoid any stale/portal issues
+                                      const platformKey = (platform.key as string) || '';
+                                      handleDisconnect(platformKey, (channel as any).id);
                                     }}
                                     className="text-destructive"
                                   >
@@ -839,12 +915,15 @@ export default function SocialMediaPage() {
                       </div>
                       <Button
                         onClick={
-                          platform.name === 'YouTube' ? handleConnectYouTube :
-                          platform.name === 'Pinterest' ? handleConnectPinterest :
-                          platform.name === 'LinkedIn' ? handleConnectLinkedIn :
+                          platform.key === 'youtube' ? handleConnectYouTube :
+                          platform.key === 'pinterest' ? handleConnectPinterest :
+                          platform.key === 'linkedin' ? handleConnectLinkedIn :
+                          platform.key === 'instagram' ? handleConnectInstagram :
+                          platform.key === 'twitter' ? handleConnectTwitter :
+                          platform.key === 'tiktok' ? handleConnectTikTok :
                           undefined
                         }
-                        disabled={connectingPlatform === platform.name.toLowerCase()}
+                        disabled={connectingPlatform === platform.key}
                       >
                         <Plus className="h-4 w-4 mr-2" />
                         Connect

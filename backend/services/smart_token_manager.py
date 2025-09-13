@@ -60,31 +60,31 @@ class SmartTokenManager:
             # Find channels with tokens expiring within 10 minutes
             ten_minutes_from_now = datetime.now(timezone.utc) + timedelta(minutes=10)
             
-            result = await client.table("youtube_channels").select("*").eq(
-                "is_active", True
-            ).eq("auto_refresh_enabled", True).eq(
-                "needs_reauth", False
+            result = await client.table("integrations").select("*").eq(
+                "platform", "youtube"
+            ).eq("disabled", False).eq(
+                "refresh_needed", False
             ).lt("token_expires_at", ten_minutes_from_now.isoformat()).execute()
             
             if result.data:
-                logger.info(f"🔍 Found {len(result.data)} channels needing proactive refresh")
+                logger.info(f"🔍 Found {len(result.data)} integrations needing proactive refresh")
                 
-                for channel in result.data:
+                for integration in result.data:
                     try:
-                        await self._proactive_refresh_channel(channel)
+                        await self._proactive_refresh_channel(integration)
                     except Exception as e:
-                        logger.error(f"Failed to refresh channel {channel['name']}: {e}")
+                        logger.error(f"Failed to refresh integration {integration['name']}: {e}")
             else:
                 logger.debug("✅ All tokens healthy - no proactive refresh needed")
                 
         except Exception as e:
             logger.error(f"Error checking token health: {e}")
     
-    async def _proactive_refresh_channel(self, channel: Dict[str, Any]):
-        """Proactively refresh a single channel's token (Morphic pattern)"""
-        channel_id = channel['id']
-        user_id = channel['user_id']
-        channel_name = channel['name']
+    async def _proactive_refresh_channel(self, integration: Dict[str, Any]):
+        """Proactively refresh a single integration's token (Morphic pattern)"""
+        channel_id = integration['platform_account_id']
+        user_id = integration['user_id']
+        channel_name = integration['name']
         
         logger.info(f"🔄 Proactive Refresh: {channel_name} ({channel_id})")
         

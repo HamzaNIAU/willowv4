@@ -25,11 +25,57 @@ import {
   List,
 } from 'lucide-react';
 
-// Custom YouTube icon component using the actual YouTube SVG
+// Custom platform icon components using static assets
 const YouTubeIcon: ElementType = (props: any) => 
   React.createElement('img', {
     src: '/platforms/youtube.svg',
     alt: 'YouTube',
+    className: props.className || 'h-4 w-4',
+    ...props
+  });
+
+// Pinterest icon rendered within a rounded container so it doesn't appear as a red square
+const PinterestIcon: ElementType = (props: any) => {
+  const { className, ...rest } = props || {};
+  return (
+    <span className={className} {...rest}>
+      <img
+        src="/platforms/pinterest.png"
+        alt="Pinterest"
+        className="h-full w-full rounded-full"
+      />
+    </span>
+  );
+};
+
+const InstagramIcon: ElementType = (props: any) =>
+  React.createElement('img', {
+    src: '/platforms/instagram.png',
+    alt: 'Instagram',
+    className: props.className || 'h-4 w-4',
+    ...props
+  });
+
+const TwitterXIcon: ElementType = (props: any) =>
+  React.createElement('img', {
+    src: '/platforms/x.png',
+    alt: 'X',
+    className: props.className || 'h-4 w-4',
+    ...props
+  });
+
+const LinkedInIcon: ElementType = (props: any) =>
+  React.createElement('img', {
+    src: '/platforms/linkedin.png',
+    alt: 'LinkedIn',
+    className: props.className || 'h-4 w-4',
+    ...props
+  });
+
+const TikTokIcon: ElementType = (props: any) =>
+  React.createElement('img', {
+    src: '/platforms/tiktok.png',
+    alt: 'TikTok',
     className: props.className || 'h-4 w-4',
     ...props
   });
@@ -181,6 +227,69 @@ export const getToolIcon = (toolName: string): ElementType => {
     case 'youtube-check-upload-status':
       return YouTubeIcon;
 
+    // Pinterest
+    case 'pinterest-authenticate':
+    case 'pinterest-accounts':
+    case 'pinterest-create-pin':
+    case 'pinterest-pin-status':
+    case 'pinterest-account-boards':
+    case 'pinterest-recent-pins':
+    case 'pinterest_authenticate':
+    case 'pinterest_accounts':
+    case 'pinterest_create_pin':
+    case 'pinterest_pin_status':
+    case 'pinterest_account_boards':
+    case 'pinterest_recent_pins':
+      return PinterestIcon;
+
+    // Instagram
+    case 'instagram-authenticate':
+    case 'instagram-accounts':
+    case 'instagram-create-post':
+    case 'instagram-create-story':
+    case 'instagram-get-posts':
+    case 'instagram_authenticate':
+    case 'instagram_accounts':
+    case 'instagram_create_post':
+    case 'instagram_create_story':
+    case 'instagram_get_posts':
+      return InstagramIcon;
+
+    // Twitter / X
+    case 'twitter-authenticate':
+    case 'twitter-accounts':
+    case 'twitter-create-tweet':
+    case 'twitter-check-tweet-status':
+    case 'twitter-search-tweets':
+    case 'twitter_authenticate':
+    case 'twitter_accounts':
+    case 'twitter_create_tweet':
+    case 'twitter_check_tweet_status':
+    case 'twitter_search_tweets':
+      return TwitterXIcon;
+
+    // LinkedIn
+    case 'linkedin-authenticate':
+    case 'linkedin-accounts':
+    case 'linkedin-create-post':
+    case 'linkedin-post-status':
+    case 'linkedin-account-posts':
+    case 'linkedin_authenticate':
+    case 'linkedin_accounts':
+    case 'linkedin_create_post':
+    case 'linkedin_post_status':
+    case 'linkedin_account_posts':
+      return LinkedInIcon;
+
+    // TikTok
+    case 'tiktok-authenticate':
+    case 'tiktok-accounts':
+    case 'tiktok-upload-video':
+    case 'tiktok_authenticate':
+    case 'tiktok_accounts':
+    case 'tiktok_upload_video':
+      return TikTokIcon;
+
     default:
       if (toolName?.startsWith('mcp_')) {
         const parts = toolName.split('_');
@@ -203,6 +312,18 @@ export const getToolIcon = (toolName: string): ElementType => {
       // Add logging for debugging unhandled tool types
       return Wrench; // Default icon for tools
   }
+};
+
+// Map tool name to brand styles for chips/badges
+export const getBrandStyles = (toolName: string): { bg: string; text: string } | null => {
+  const t = toolName?.toLowerCase() || '';
+  if (t.startsWith('youtube')) return { bg: 'bg-red-600', text: 'text-white' };
+  if (t.startsWith('pinterest')) return { bg: 'bg-[#E60023]', text: 'text-white' };
+  if (t.startsWith('instagram')) return { bg: 'bg-gradient-to-r from-purple-500 to-pink-500', text: 'text-white' };
+  if (t.startsWith('twitter')) return { bg: 'bg-black', text: 'text-white' };
+  if (t.startsWith('linkedin')) return { bg: 'bg-[#0A66C2]', text: 'text-white' };
+  if (t.startsWith('tiktok')) return { bg: 'bg-black', text: 'text-white' };
+  return null;
 };
 
 // Helper function to extract a primary parameter from XML/arguments

@@ -5,7 +5,7 @@ import asyncio
 import aiohttp
 
 from agentpress.tool import Tool, openapi_schema, usage_example, ToolResult
-from services.supabase import get_db_connection
+from services.supabase import DBConnection
 from tiktok_mcp.oauth import TikTokOAuthHandler
 from utils.logger import logger
 
@@ -17,7 +17,7 @@ class TikTokCompleteMCPTool(Tool):
         super().__init__()
         self.user_id = user_id
         self.tiktok_accounts = tiktok_accounts or []
-        self.db = get_db_connection()
+        self.db = DBConnection()
         self.oauth_handler = TikTokOAuthHandler(self.db)
     
     @openapi_schema({

@@ -340,6 +340,32 @@ async def make_llm_api_call(
     # debug <timestamp>.json messages
     logger.debug(f"Making LLM API call to model: {model_name} (Thinking: {enable_thinking}, Effort: {reasoning_effort})")
     logger.debug(f"📡 API Call: Using model {model_name}")
+
+    # Early provider credential check to avoid silent hangs
+    def _missing_key_for_model(name: str) -> Optional[str]:
+        try:
+            if name.startswith("openrouter/"):
+                return None if getattr(config, 'OPENROUTER_API_KEY', None) else "OPENROUTER_API_KEY"
+            if name.startswith("openai/") or name.startswith("gpt-"):
+                return None if getattr(config, 'OPENAI_API_KEY', None) else "OPENAI_API_KEY"
+            if name.startswith("anthropic/") or "claude" in name.lower():
+                return None if getattr(config, 'ANTHROPIC_API_KEY', None) else "ANTHROPIC_API_KEY"
+            if name.startswith("xai/") or "grok" in name.lower():
+                return None if getattr(config, 'XAI_API_KEY', None) else "XAI_API_KEY"
+            if name.startswith("gemini/") or "gemini" in name.lower():
+                return None if getattr(config, 'GEMINI_API_KEY', None) else "GEMINI_API_KEY"
+            if name.startswith("bedrock/"):
+                has_bedrock = bool(getattr(config, 'AWS_ACCESS_KEY_ID', None) and getattr(config, 'AWS_SECRET_ACCESS_KEY', None) and getattr(config, 'AWS_REGION_NAME', None))
+                return None if has_bedrock else "AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY/AWS_REGION_NAME"
+        except Exception:
+            pass
+        return None
+
+    missing_key = _missing_key_for_model(model_name)
+    if missing_key:
+        logger.error(f"Missing credentials for model '{model_name}': {missing_key}")
+        raise LLMError(f"Missing credentials for model provider. Please set {missing_key}.")
+
     params = prepare_params(
         messages=messages,
         model_name=model_name,

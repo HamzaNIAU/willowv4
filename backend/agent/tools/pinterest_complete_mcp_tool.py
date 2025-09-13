@@ -53,76 +53,41 @@ class PinterestTool(Tool):
         return jwt.encode(payload, jwt_secret, algorithm="HS256")
     
     async def _check_enabled_accounts(self) -> tuple[bool, List[Dict[str, Any]], str]:
-        """REAL-TIME: Direct database query - NO CACHE DEPENDENCIES (Following YouTube pattern)"""
+        """Query the universal integrations system for enabled Pinterest accounts."""
         try:
-            logger.info(f"🔴 REAL-TIME: Querying database directly for Pinterest agent {self.agent_id}")
-            
-            # REAL-TIME: Direct database access instead of HTTP/cache  
             from services.supabase import DBConnection
+            from services.unified_integration_service import UnifiedIntegrationService
             db = DBConnection()
-            client = await db.client
-            
-            # Special handling for suna-default virtual agent
+            integration_service = UnifiedIntegrationService(db)
+
             if self.agent_id == "suna-default":
-                logger.info(f"[Pinterest MCP] Using agent_social_accounts for suna-default agent")
-                result = await client.table("agent_social_accounts").select("*").eq(
-                    "agent_id", "suna-default"
-                ).eq("user_id", self.user_id).eq("platform", "pinterest").eq("enabled", True).execute()
-                
-                if result.data:
-                    accounts = []
-                    for account in result.data:
-                        accounts.append({
-                            "id": account["account_id"],
-                            "name": account["account_name"],
-                            "username": account.get("username", ""),
-                            "profile_picture": account.get("profile_picture"),
-                            "subscriber_count": account.get("subscriber_count", 0),
-                            "view_count": account.get("view_count", 0),
-                            "video_count": account.get("video_count", 0)
-                        })
-                    logger.info(f"✅ Found {len(accounts)} ENABLED Pinterest accounts for suna-default")
-                    return True, accounts, ""
-                else:
-                    error_msg = (
-                        "❌ **No Pinterest accounts enabled**\\n\\n"
-                        "Please enable Pinterest accounts in the Social Media dropdown"
-                    )
-                    return False, [], error_msg
-            
-            # Regular agent - query agent_social_accounts
-            result = await client.table("agent_social_accounts").select("*").eq(
-                "agent_id", self.agent_id
-            ).eq("user_id", self.user_id).eq("platform", "pinterest").eq("enabled", True).execute()
-            
+                integrations = await integration_service.get_user_integrations(self.user_id, platform="pinterest")
+            else:
+                integrations = await integration_service.get_agent_integrations(self.agent_id, self.user_id, platform="pinterest")
+
             accounts = []
-            for account in result.data:
+            for integ in integrations:
+                pdata = integ.get("platform_data", {})
                 accounts.append({
-                    "id": account["account_id"],
-                    "name": account["account_name"],
-                    "username": account["username"],
-                    "profile_picture": account["profile_picture"],
-                    "subscriber_count": account["subscriber_count"],
-                    "view_count": account["view_count"],
-                    "video_count": account["video_count"],
-                    "country": account["country"]
+                    "id": integ["platform_account_id"],
+                    "name": integ.get("cached_name") or integ["name"],
+                    "username": pdata.get("username"),
+                    "profile_picture": integ.get("cached_picture") or integ.get("picture"),
+                    "subscriber_count": pdata.get("follower_count", 0),
+                    "view_count": pdata.get("monthly_views", 0),
+                    "video_count": pdata.get("pin_count", 0),
+                    "country": pdata.get("country")
                 })
-            
+
             if accounts:
                 return True, accounts, ""
+
+            if self.agent_id == "suna-default":
+                return False, [], "❌ **No Pinterest accounts connected**\n\nPlease connect a Pinterest account in Social Media settings."
             else:
-                all_accounts_result = await client.table("agent_social_accounts").select("*").eq(
-                    "agent_id", self.agent_id
-                ).eq("user_id", self.user_id).eq("platform", "pinterest").execute()
-                
-                if all_accounts_result.data:
-                    disabled_count = len(all_accounts_result.data)
-                    return False, [], f"❌ **{disabled_count} Pinterest accounts connected but disabled**\\n\\nPlease enable at least one account in the MCP connections dropdown (⚙️ button)."
-                else:
-                    return False, [], "❌ **No Pinterest accounts connected**\\n\\nPlease connect a Pinterest account first using `pinterest_authenticate`."
-                    
+                return False, [], "❌ **No Pinterest accounts enabled**\n\nPlease enable at least one account in the MCP connections dropdown (⚙️ button)."
         except Exception as e:
-            logger.error(f"🔴 REAL-TIME ERROR: Failed to query Pinterest accounts: {e}")
+            logger.error(f"Universal integrations query failed (Pinterest): {e}")
             return False, [], f"Error checking Pinterest accounts: {str(e)}"
     
     @openapi_schema({
@@ -207,11 +172,172 @@ class PinterestTool(Tool):
             if not has_accounts:
                 return self.fail_response(error_msg)
             
-            message = f"📌 **Pinterest Accounts:**\\n\\n"
-            for account in accounts:
-                message += f"• **{account['name']}** ({account['id']})\\n"
-            
-            return self.success_response(message)
+            # Format accounts for UI parity with YouTube
+            formatted_accounts = []
+            for acc in accounts:
+                formatted_accounts.append({
+                    "id": acc["id"],
+                    "name": acc["name"],
+                    "username": acc.get("username"),
+                    "profile_picture": acc.get("profile_picture"),
+                    "subscriber_count": acc.get("subscriber_count", 0),
+                    "view_count": acc.get("view_count", 0),
+                    "video_count": acc.get("video_count", 0)
+                })
+
+            # Human-readable summary (also used by the left chat)
+            summary = "📌 **Pinterest Accounts:**\\n\\n"
+            for acc in accounts:
+                handle = acc.get('username', acc['id'])
+                summary += f"• **{acc['name']}** ({handle})\\n"
+
+            return self.success_response({
+                "accounts": formatted_accounts,
+                "count": len(formatted_accounts),
+                "message": summary,
+                "has_accounts": True,
+                "single_account": len(formatted_accounts) == 1
+            })
             
         except Exception as e:
             return self.fail_response(f"Error: {str(e)}")
+
+    @openapi_schema({
+        "type": "function",
+        "function": {
+            "name": "pinterest_account_boards",
+            "description": "List boards for a Pinterest account",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "account_id": {"type": "string", "description": "Pinterest account ID"}
+                },
+                "required": ["account_id"]
+            }
+        }
+    })
+    async def pinterest_account_boards(self, account_id: str) -> ToolResult:
+        try:
+            async with aiohttp.ClientSession() as session:
+                url = f"{self.base_url}/pinterest/boards/{account_id}"
+                headers = {"Authorization": f"Bearer {self.jwt_token}"}
+                async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=20)) as resp:
+                    if resp.status != 200:
+                        return self.fail_response(f"Failed to get boards: HTTP {resp.status} {await resp.text()}")
+                    data = await resp.json()
+                    return self.success_response({
+                        "account_id": account_id,
+                        "boards": data.get("boards", []),
+                        "count": data.get("count", 0)
+                    })
+        except Exception as e:
+            logger.error(f"[Pinterest MCP] Boards error: {e}")
+            return self.fail_response(str(e))
+
+    @openapi_schema({
+        "type": "function",
+        "function": {
+            "name": "pinterest_create_pin",
+            "description": "Create a Pinterest pin on a board",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "account_id": {"type": "string"},
+                    "board_id": {"type": "string"},
+                    "title": {"type": "string"},
+                    "description": {"type": "string"},
+                    "link": {"type": "string"}
+                },
+                "required": ["account_id", "title"]
+            }
+        }
+    })
+    async def pinterest_create_pin(self, account_id: str, title: str, description: str = "", link: str = "", board_id: str = "") -> ToolResult:
+        try:
+            payload = {
+                "account_id": account_id,
+                "board_id": board_id or "board_123",
+                "title": title,
+                "description": description,
+                "link": link or None,
+            }
+            async with aiohttp.ClientSession() as session:
+                url = f"{self.base_url}/pinterest/pin/create"
+                headers = {"Authorization": f"Bearer {self.jwt_token}", "Content-Type": "application/json"}
+                async with session.post(url, headers=headers, json=payload, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+                    if resp.status != 200:
+                        return self.fail_response(f"Failed to create pin: HTTP {resp.status} {await resp.text()}")
+                    result = await resp.json()
+                    return self.success_response({
+                        "pin_id": result.get("pin_id"),
+                        "pin_url": result.get("pin_url"),
+                        "title": title,
+                        "description": description,
+                        "account_id": account_id,
+                        "board_id": payload["board_id"],
+                        "status": "completed",
+                        "message": result.get("message", "Pinterest pin created successfully")
+                    })
+        except Exception as e:
+            logger.error(f"[Pinterest MCP] Create pin error: {e}")
+            return self.fail_response(str(e))
+
+    @openapi_schema({
+        "type": "function",
+        "function": {
+            "name": "pinterest_pin_status",
+            "description": "Check the status of a Pinterest pin (lightweight placeholder)",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "pin_id": {"type": "string"},
+                    "pin_url": {"type": "string"}
+                },
+                "required": ["pin_id"]
+            }
+        }
+    })
+    async def pinterest_pin_status(self, pin_id: str, pin_url: str = "") -> ToolResult:
+        try:
+            # Placeholder status (API not implemented yet)
+            return self.success_response({
+                "pin_id": pin_id,
+                "pin_url": pin_url or f"https://www.pinterest.com/pin/{pin_id}/",
+                "status": "available",
+                "message": "Pin is available"
+            })
+        except Exception as e:
+            return self.fail_response(str(e))
+
+    @openapi_schema({
+        "type": "function",
+        "function": {
+            "name": "pinterest_recent_pins",
+            "description": "Get recent pins for an account (mock/demo)",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "account_id": {"type": "string"},
+                    "limit": {"type": "integer", "default": 10}
+                },
+                "required": ["account_id"]
+            }
+        }
+    })
+    async def pinterest_recent_pins(self, account_id: str, limit: int = 10) -> ToolResult:
+        try:
+            async with aiohttp.ClientSession() as session:
+                url = f"{self.base_url}/pinterest/pins/{account_id}/recent?limit={limit}"
+                headers = {"Authorization": f"Bearer {self.jwt_token}"}
+                async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=20)) as resp:
+                    if resp.status != 200:
+                        return self.fail_response(f"Failed to fetch recent pins: HTTP {resp.status} {await resp.text()}")
+                    data = await resp.json()
+                    return self.success_response({
+                        "account_id": account_id,
+                        "pins": data.get("pins", []),
+                        "count": data.get("count", 0)
+                    })
+        except Exception as e:
+            logger.error(f"[Pinterest MCP] Recent pins error: {e}")
+            return self.fail_response(str(e))

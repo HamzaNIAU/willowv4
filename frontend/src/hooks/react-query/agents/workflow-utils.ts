@@ -146,7 +146,8 @@ export const getAgentWorkflows = async (agentId: string): Promise<AgentWorkflow[
   try {
     const agentPlaygroundEnabled = await isFlagEnabled('custom_agents');
     if (!agentPlaygroundEnabled) {
-      throw new Error('Custom agents is not enabled');
+      // Single-agent mode: return empty workflows silently
+      return [];
     }
     const supabase = createClient();
     const { data: { session } } = await supabase.auth.getSession();
@@ -171,21 +172,8 @@ export const getAgentWorkflows = async (agentId: string): Promise<AgentWorkflow[
     const workflows = await response.json();
     return workflows;
   } catch (err) {
-    // Throttle error logging when custom agents is disabled
-    if (err instanceof Error && err.message === 'Custom agents is not enabled') {
-      // Only log once every 30 seconds to avoid spam
-      const lastLoggedKey = 'workflows_error_logged';
-      const lastLogged = parseInt(localStorage.getItem(lastLoggedKey) || '0');
-      const now = Date.now();
-      
-      if (now - lastLogged > 30000) { // 30 seconds
-        console.warn('Custom agents is disabled - workflow API calls will fail silently');
-        localStorage.setItem(lastLoggedKey, now.toString());
-      }
-    } else {
-      console.error('Error fetching workflows:', err);
-    }
-    throw err;
+    console.error('Error fetching workflows:', err);
+    return [];
   }
 };
 

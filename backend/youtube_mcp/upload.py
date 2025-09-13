@@ -85,17 +85,17 @@ class YouTubeUploadService:
         # Get valid access token
         access_token = await self.oauth_handler.get_valid_token(user_id, channel_id)
         
-        # Get channel info
+        # Get channel display name from universal integrations (single source of truth)
         client = await self.db.client
-        # FIXED: Use compatibility view that filters by platform='youtube' only
-        channel_result = await client.table("youtube_channels_compat").select("name").eq(
-            "user_id", user_id
-        ).eq("id", channel_id).execute()
-        
-        if not channel_result.data:
-            raise Exception(f"Channel {channel_id} not found")
-        
-        channel_name = channel_result.data[0]["name"]
+        try:
+            integ_result = await client.table("integrations").select("name").eq(
+                "user_id", user_id
+            ).eq("platform", "youtube").eq("platform_account_id", channel_id).single().execute()
+            channel_name = (integ_result.data or {}).get("name") if hasattr(integ_result, 'data') else None
+        except Exception:
+            channel_name = None
+        if not channel_name:
+            channel_name = "YouTube Channel"
         
         # Get video file info from reference
         video_ref_result = await client.table("video_file_references").select("*").eq(

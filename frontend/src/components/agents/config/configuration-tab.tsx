@@ -8,7 +8,7 @@ import { AgentPlaybooksConfiguration } from '../playbooks/agent-playbooks-config
 import { AgentTriggersConfiguration } from '../triggers/agent-triggers-configuration';
 import { AgentModelSelector } from './model-selector';
 import { toast } from 'sonner';
-import { KortixLogo } from '../../sidebar/kortix-logo';
+import { WillowLogo } from '../../sidebar/willow-logo';
 
 interface ConfigurationTabProps {
   agentId: string;
@@ -93,7 +93,7 @@ export function ConfigurationTab({
   const handleSystemPromptChange = (value: string) => {
     if (!isSystemPromptEditable && isSunaAgent) {
       toast.error("System prompt cannot be edited", {
-        description: "Suna's system prompt is managed centrally and cannot be changed.",
+        description: "Willow's system prompt is managed centrally and cannot be changed.",
       });
       return;
     }
@@ -107,7 +107,7 @@ export function ConfigurationTab({
   const handleToolsChange = (tools: Record<string, boolean | { enabled: boolean; description: string }>) => {
     if (!areToolsEditable && isSunaAgent) {
       toast.error("Tools cannot be modified", {
-        description: "Suna's default tools are managed centrally and cannot be changed.",
+        description: "Willow's default tools are managed centrally and cannot be changed.",
       });
       return;
     }
@@ -127,12 +127,12 @@ export function ConfigurationTab({
             <div className="p-4 bg-primary/10 border border-primary-200 rounded-xl">
               <div className="flex items-center gap-3 mb-2">
                 <div className="text-primary-600">
-                  <KortixLogo size={20} />
+                  <WillowLogo size={20} />
                 </div>
-                <span className="font-semibold text-primary-800">Suna Default Agent</span>
+                <span className="font-semibold text-primary-800">Willow Default Agent</span>
               </div>
               <p className="text-sm text-primary-700">
-                This is Suna's default agent with centrally managed system prompt and tools.
+                This is Willow's default agent with centrally managed system prompt and tools.
                 You can customize integrations, knowledge base, playbooks, and triggers to personalize your experience.
               </p>
             </div>

@@ -66,6 +66,7 @@ const LoggedInMenu: React.FC<UnifiedConfigMenuProps> = ({
     const [searchQuery, setSearchQuery] = useState('');
     const searchContainerRef = useRef<HTMLDivElement>(null);
     const [integrationsOpen, setIntegrationsOpen] = useState(false);
+    const [preFocusSocial, setPreFocusSocial] = useState<string | null>(null);
     const [showNewAgentDialog, setShowNewAgentDialog] = useState(false);
     const searchInputRef = useRef<HTMLInputElement>(null);
     const [execDialog, setExecDialog] = useState<{ open: boolean; playbook: any | null; agentId: string | null }>({ open: false, playbook: null, agentId: null });
@@ -96,6 +97,20 @@ const LoggedInMenu: React.FC<UnifiedConfigMenuProps> = ({
             setSearchQuery('');
         }
     }, [isOpen]);
+
+    // Allow external components to open the menu focusing Social Media section
+    const socialSectionRef = React.useRef<HTMLDivElement>(null);
+    useEffect(() => {
+        const handler = (e: Event) => {
+            const ce = e as CustomEvent<{ platform?: string }>;
+            setIsOpen(true);
+            setPreFocusSocial(ce.detail?.platform || null);
+            // Wait a tick for content to mount
+            setTimeout(() => socialSectionRef.current?.scrollIntoView({ block: 'start', behavior: 'smooth' }), 60);
+        };
+        window.addEventListener('unified-social-open', handler as EventListener);
+        return () => window.removeEventListener('unified-social-open', handler as EventListener);
+    }, []);
 
 
 
@@ -217,6 +232,19 @@ const LoggedInMenu: React.FC<UnifiedConfigMenuProps> = ({
             mcp.platform === 'youtube' && mcp.isSocialMedia
         );
     }, [mcpConfigurations]);
+    const youtubeEnabledCount = React.useMemo(() => {
+        return youtubeChannels.filter((ch: any) => localToggles[ch.qualifiedName] !== false).length;
+    }, [youtubeChannels, localToggles]);
+
+    // Filter Pinterest accounts from MCP configurations
+    const pinterestAccounts = React.useMemo(() => {
+        return mcpConfigurations.filter((mcp: any) => 
+            mcp.platform === 'pinterest' && mcp.isSocialMedia
+        );
+    }, [mcpConfigurations]);
+    const pinterestEnabledCount = React.useMemo(() => {
+        return pinterestAccounts.filter((acc: any) => localToggles[acc.qualifiedName] !== false).length;
+    }, [pinterestAccounts, localToggles]);
 
     return (
         <>
@@ -393,10 +421,10 @@ const LoggedInMenu: React.FC<UnifiedConfigMenuProps> = ({
                     <DropdownMenuSeparator />
 
                     {/* Social Media */}
-                    <div className="px-1.5">
+                    <div className="px-1.5" ref={socialSectionRef}>
                         <div className="px-3 py-1 text-[11px] font-medium text-muted-foreground">Social Media</div>
                         <DropdownMenuSub>
-                            <DropdownMenuSubTrigger className="flex items-center gap-2 px-3 py-2 mx-0 my-0.5 text-sm cursor-pointer rounded-lg">
+                            <DropdownMenuSubTrigger showChevron={false} className="relative flex items-center gap-2 px-3 py-2 mx-0 my-0.5 text-sm cursor-pointer rounded-lg">
                                 <img 
                                     src="/platforms/youtube.svg" 
                                     alt="YouTube"
@@ -404,8 +432,8 @@ const LoggedInMenu: React.FC<UnifiedConfigMenuProps> = ({
                                 />
                                 <span>YouTube</span>
                                 {youtubeChannels.length > 0 && (
-                                    <span className="ml-auto text-xs text-muted-foreground">
-                                        {youtubeChannels.filter(ch => localToggles[ch.qualifiedName] !== false).length}
+                                    <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[10px] px-2 py-0.5 rounded-sm bg-blue-100 dark:bg-blue-900 text-blue-600 dark:text-blue-300 font-medium">
+                                        {youtubeEnabledCount} {youtubeEnabledCount === 1 ? 'account' : 'accounts'}
                                     </span>
                                 )}
                             </DropdownMenuSubTrigger>
@@ -478,6 +506,98 @@ const LoggedInMenu: React.FC<UnifiedConfigMenuProps> = ({
                                                     className="w-full text-xs justify-center"
                                                 >
                                                     Manage YouTube Accounts
+                                                </Button>
+                                            </div>
+                                        </>
+                                    )}
+                                </DropdownMenuSubContent>
+                            </DropdownMenuPortal>
+                        </DropdownMenuSub>
+
+                        {/* Pinterest */}
+                        <DropdownMenuSub>
+                            <DropdownMenuSubTrigger showChevron={false} className="relative flex items-center gap-2 px-3 py-2 mx-0 my-0.5 text-sm cursor-pointer rounded-lg">
+                                <img 
+                                    src="/platforms/pinterest.png" 
+                                    alt="Pinterest"
+                                    className="h-4 w-4 rounded"
+                                />
+                                <span>Pinterest</span>
+                                {pinterestAccounts.length > 0 && (
+                                    <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[10px] px-2 py-0.5 rounded-sm bg-blue-100 dark:bg-blue-900 text-blue-600 dark:text-blue-300 font-medium">
+                                        {pinterestEnabledCount} {pinterestEnabledCount === 1 ? 'account' : 'accounts'}
+                                    </span>
+                                )}
+                            </DropdownMenuSubTrigger>
+                            <DropdownMenuPortal>
+                                <DropdownMenuSubContent className="w-72 rounded-xl max-h-80 overflow-y-auto">
+                                    {pinterestAccounts.length === 0 ? (
+                                        <div className="px-3 py-4 text-center">
+                                            <div className="text-sm text-muted-foreground mb-2">No Pinterest accounts connected</div>
+                                            <Button
+                                                size="sm"
+                                                onClick={() => {
+                                                    setIsOpen(false);
+                                                    router.push('/social-media');
+                                                }}
+                                                className="text-xs"
+                                            >
+                                                Connect Pinterest Account
+                                            </Button>
+                                        </div>
+                                    ) : (
+                                        <>
+                                            <div className="px-3 py-2 border-b border-border/50">
+                                                <div className="text-xs font-medium text-muted-foreground mb-1">Connected Accounts</div>
+                                                <div className="text-xs text-muted-foreground">
+                                                    Toggle accounts on/off for this agent
+                                                </div>
+                                            </div>
+                                            {pinterestAccounts.map((account: any) => {
+                                                const mcpId = account.qualifiedName;
+                                                const isEnabled = localToggles[mcpId] ?? (account.enabled !== false);
+                                                const profilePicture = account.profile_picture || account.config?.profile_picture;
+                                                
+                                                return (
+                                                    <div
+                                                        key={mcpId}
+                                                        className="flex items-center justify-between px-3 py-2 hover:bg-accent/50"
+                                                    >
+                                                        <div className="flex items-center gap-2 min-w-0">
+                                                            {profilePicture ? (
+                                                                <img
+                                                                    src={profilePicture}
+                                                                    alt={account.name}
+                                                                    className="h-5 w-5 rounded-full object-cover border border-border/50"
+                                                                />
+                                                            ) : (
+                                                                <img 
+                                                                  src="/platforms/pinterest.png" 
+                                                                  alt="Pinterest"
+                                                                  className="h-5 w-5 rounded"
+                                                                />
+                                                            )}
+                                                            <span className="text-sm truncate">{account.name}</span>
+                                                        </div>
+                                                        <Switch
+                                                            checked={isEnabled}
+                                                            onCheckedChange={() => handleYouTubeToggle(mcpId)}
+                                                            className="scale-90"
+                                                        />
+                                                    </div>
+                                                );
+                                            })}
+                                            <div className="px-3 py-2 border-t border-border/50">
+                                                <Button
+                                                    size="sm"
+                                                    variant="ghost"
+                                                    onClick={() => {
+                                                        setIsOpen(false);
+                                                        router.push('/social-media');
+                                                    }}
+                                                    className="w-full text-xs justify-center"
+                                                >
+                                                    Manage Pinterest Accounts
                                                 </Button>
                                             </div>
                                         </>
@@ -601,5 +721,3 @@ export const UnifiedConfigMenu: React.FC<UnifiedConfigMenuProps> = (props) => {
 };
 
 export default UnifiedConfigMenu;
-
-

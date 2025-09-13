@@ -1,23 +1,23 @@
 from fastapi import APIRouter, HTTPException, Depends
 from typing import Optional, Dict
 from utils.auth_utils import verify_admin_api_key
-from utils.suna_default_agent_service import SunaDefaultAgentService
+from utils.willow_default_agent_service import WillowDefaultAgentService
 from utils.logger import logger
 from utils.config import config, EnvMode
 from dotenv import load_dotenv, set_key, find_dotenv, dotenv_values
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
-@router.post("/suna-agents/install-user/{account_id}")
-async def admin_install_suna_for_user(
+@router.post("/willow-agents/install-user/{account_id}")
+async def admin_install_willow_for_user(
     account_id: str,
     replace_existing: bool = False,
     _: bool = Depends(verify_admin_api_key)
 ):
     logger.debug(f"Admin installing Willow agent for user: {account_id}")
     
-    service = SunaDefaultAgentService()
-    agent_id = await service.install_suna_agent_for_user(account_id, replace_existing)
+    service = WillowDefaultAgentService()
+    agent_id = await service.install_willow_agent_for_user(account_id, replace_existing)
     
     if agent_id:
         return {

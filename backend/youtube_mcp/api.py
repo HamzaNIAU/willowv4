@@ -367,69 +367,37 @@ async def auth_callback(
 async def get_channels(
     user_id: str = Depends(get_current_user_id_from_jwt)
 ) -> Dict[str, Any]:
-    """Get user's YouTube channels with comprehensive error handling"""
+    """Get user's YouTube channels via the universal integrations system."""
     try:
-        # Step 1: Initialize channel service
-        try:
-            channel_service = YouTubeChannelService(db)
-        except Exception as e:
-            logger.error(f"Failed to initialize YouTubeChannelService: {e}")
-            raise HTTPException(
-                status_code=500,
-                detail="Failed to initialize channel service. Please try again later."
-            )
-        
-        # Step 2: Fetch channels with proper error handling
-        try:
-            channels = await channel_service.get_user_channels(user_id)
-        except Exception as e:
-            logger.error(f"Database error fetching channels for user {user_id}: {e}")
-            # Provide helpful message based on error type
-            if "connection" in str(e).lower():
-                raise HTTPException(
-                    status_code=503,
-                    detail="Unable to connect to database. Please try again in a moment."
-                )
-            elif "timeout" in str(e).lower():
-                raise HTTPException(
-                    status_code=504,
-                    detail="Request timed out. Please try again."
-                )
-            else:
-                raise HTTPException(
-                    status_code=500,
-                    detail="Failed to fetch YouTube channels. Please try refreshing the page."
-                )
-        
-        # Step 3: Handle empty channels gracefully
-        if not channels:
-            logger.info(f"No YouTube channels found for user {user_id}")
-            return {
-                "success": True,
-                "channels": [],
-                "count": 0,
-                "message": "No YouTube channels connected. Connect a channel to get started."
-            }
-        
-        # Step 4: Log success and return
-        logger.info(f"Successfully fetched {len(channels)} channels for user {user_id}")
-        
+        from services.unified_integration_service import UnifiedIntegrationService
+        integration_service = UnifiedIntegrationService(db)
+
+        integrations = await integration_service.get_user_integrations(user_id, platform="youtube")
+
+        channels = []
+        for integ in integrations:
+            pdata = integ.get("platform_data", {})
+            # Keep response shape used by frontend
+            channels.append({
+                "id": integ["platform_account_id"],
+                "name": integ["name"],
+                "username": pdata.get("username"),
+                "profile_picture": (pdata.get("profile_pictures", {}) or {}).get("medium") or pdata.get("profile_pictures", {}).get("default") or integ.get("picture"),
+                "subscriber_count": pdata.get("subscriber_count", 0),
+                "view_count": pdata.get("view_count", 0),
+                "video_count": pdata.get("video_count", 0),
+            })
+
+        logger.info(f"Universal integrations returned {len(channels)} YouTube channels for user {user_id}")
+
         return {
             "success": True,
             "channels": channels,
             "count": len(channels),
-            "message": f"Found {len(channels)} connected channel{'s' if len(channels) != 1 else ''}"
         }
-        
-    except HTTPException:
-        raise  # Re-raise HTTP exceptions
     except Exception as e:
-        # Catch-all for unexpected errors
-        logger.error(f"Unexpected error in get_channels: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail="An unexpected error occurred while fetching channels. Please try again later."
-        )
+        logger.error(f"Failed to get YouTube channels via universal system: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/channels/{channel_id}")
@@ -1335,26 +1303,22 @@ async def get_agent_enabled_youtube_accounts(
 ) -> Dict[str, Any]:
     """Get ONLY enabled YouTube accounts for an agent - UNIFIED SYSTEM ENDPOINT"""
     try:
-        client = await db.client
-        
-        # Query unified social accounts table directly - SINGLE SOURCE OF TRUTH
-        result = await client.table("agent_social_accounts").select("*").eq(
-            "agent_id", agent_id
-        ).eq("user_id", user_id).eq(
-            "platform", "youtube"
-        ).eq("enabled", True).order("account_name", desc=False).execute()
-        
+        from services.unified_integration_service import UnifiedIntegrationService
+        integration_service = UnifiedIntegrationService(db)
+        integrations = await integration_service.get_agent_integrations(agent_id, user_id, platform="youtube")
+
         enabled_accounts = []
-        for account in result.data:
+        for integ in integrations:
+            pdata = integ.get("platform_data", {})
             enabled_accounts.append({
-                "id": account["account_id"],
-                "name": account["account_name"],
-                "username": account["username"],
-                "profile_picture": account["profile_picture"],
-                "subscriber_count": account["subscriber_count"],
-                "view_count": account["view_count"],
-                "video_count": account["video_count"],
-                "country": account["country"]
+                "id": integ["platform_account_id"],
+                "name": integ.get("cached_name") or integ["name"],
+                "username": pdata.get("username"),
+                "profile_picture": integ.get("cached_picture") or integ.get("picture"),
+                "subscriber_count": pdata.get("subscriber_count", 0),
+                "view_count": pdata.get("view_count", 0),
+                "video_count": pdata.get("video_count", 0),
+                "country": pdata.get("country")
             })
         
         logger.info(f"🎯 Unified System: Agent {agent_id} has {len(enabled_accounts)} enabled YouTube accounts")
@@ -1377,4 +1341,3 @@ async def get_agent_enabled_youtube_accounts(
             "channels": [],
             "count": 0
         }
-
